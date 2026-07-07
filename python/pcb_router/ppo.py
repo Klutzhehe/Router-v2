@@ -200,3 +200,130 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
         "commit_legal_steps": commit_legal_steps,
     }
     return buf, stats, (obs, masks)
+
+
+class VecRolloutBuffer:
+    """Same role as RolloutBuffer, but fed by VecRoutingEnv: N env-steps
+    land in the buffer every outer loop iteration instead of 1, so
+    model.act sees a real batch (the actual fix for GPU under-utilization
+    -- see collect_rollout_vec).
+
+    Stored internally as (steps_per_env, n_envs, ...) so GAE can be
+    computed correctly per-env along the time axis (advantages must not
+    leak across different environments' trajectories). After finalize()
+    everything is flattened to (T, ...) with T = steps_per_env * n_envs
+    under the *same* attribute names RolloutBuffer uses, so PPO.update
+    works on either buffer type unmodified.
+    """
+
+    def __init__(self, steps_per_env: int, n_envs: int,
+                obs_spec: Dict[str, np.ndarray], device):
+        self.steps_per_env, self.n_envs, self.device = steps_per_env, n_envs, device
+        S, N = steps_per_env, n_envs
+        self._obs = {k: torch.zeros((S, N, *v.shape), dtype=torch.float32)
+                    for k, v in obs_spec.items()}
+        self._masks = {"type": torch.zeros((S, N, 3)),
+                      "angle": torch.zeros((S, N, 64)),
+                      "layer": torch.zeros((S, N, 12))}
+        self._a_type = torch.zeros((S, N), dtype=torch.long)
+        self._a_angle = torch.zeros((S, N), dtype=torch.long)
+        self._a_dist = torch.zeros((S, N))
+        self._a_layer = torch.zeros((S, N), dtype=torch.long)
+        self._logp = torch.zeros((S, N))
+        self._value = torch.zeros((S, N))
+        self._reward = torch.zeros((S, N))
+        self._done = torch.zeros((S, N))
+        self.t = 0
+
+    def add(self, obs, masks, action: RouterAction, logp, value, reward, done):
+        """obs/masks: dict of (N, ...) arrays; action fields/logp/value: (N,)
+        tensors; reward/done: (N,) arrays -- one batched env-step."""
+        t = self.t
+        for k in OBS_KEYS:
+            self._obs[k][t] = torch.from_numpy(obs[k])
+        for k in MASK_KEYS:
+            self._masks[k][t] = torch.from_numpy(masks[k])
+        self._a_type[t] = action.action_type
+        self._a_angle[t] = action.angle_bin
+        self._a_dist[t] = action.dist_frac
+        self._a_layer[t] = action.layer
+        self._logp[t] = logp
+        self._value[t] = value
+        self._reward[t] = torch.from_numpy(reward).float()
+        self._done[t] = torch.from_numpy(done.astype(np.float32))
+        self.t += 1
+
+    def finalize(self, last_value: torch.Tensor, cfg: PPOConfig):
+        S, N = self.steps_per_env, self.n_envs
+        adv = torch.zeros((S, N))
+        gae = torch.zeros(N)
+        for t in reversed(range(S)):
+            nonterminal = 1.0 - self._done[t]
+            next_v = last_value if t == S - 1 else self._value[t + 1]
+            delta = self._reward[t] + cfg.gamma * next_v * nonterminal - self._value[t]
+            gae = delta + cfg.gamma * cfg.gae_lambda * nonterminal * gae
+            adv[t] = gae
+        ret = adv + self._value
+
+        self.T = S * N
+        self.obs = {k: v.reshape(self.T, *v.shape[2:]) for k, v in self._obs.items()}
+        self.masks = {k: v.reshape(self.T, *v.shape[2:]) for k, v in self._masks.items()}
+        self.a_type = self._a_type.reshape(self.T)
+        self.a_angle = self._a_angle.reshape(self.T)
+        self.a_dist = self._a_dist.reshape(self.T)
+        self.a_layer = self._a_layer.reshape(self.T)
+        self.logp = self._logp.reshape(self.T)
+        self.value = self._value.reshape(self.T)
+        self.adv = adv.reshape(self.T)
+        self.ret = ret.reshape(self.T)
+
+
+def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
+                        device: str, obs=None, masks=None):
+    """Vectorized counterpart to collect_rollout: steps N envs together each
+    iteration so model.act processes a batch of N instead of 1. Same return
+    shape as collect_rollout (buffer, stats, carried (obs, masks))."""
+    n = vec_env.n
+    if obs is None:
+        obs, masks = vec_env.reset()
+    buf = VecRolloutBuffer(steps_per_env, n, {k: v[0] for k, v in obs.items()}, device)
+    ep_returns, ep_completions, ep_drc = [], [], []
+    ep_ret = np.zeros(n, dtype=np.float32)
+    commit_legal_steps = commit_taken_steps = 0
+
+    for _ in range(steps_per_env):
+        t_obs = {k: torch.from_numpy(v).to(device) for k, v in obs.items()}
+        t_masks = {k: torch.from_numpy(v).to(device) for k, v in masks.items()}
+        action, logp, value = model.act(t_obs, t_masks)
+
+        legal_commit = masks["type"][:, 2].astype(bool)
+        commit_legal_steps += int(legal_commit.sum())
+        taken_type = action.action_type.cpu().numpy()
+        commit_taken_steps += int(((taken_type == 2) & legal_commit).sum())
+
+        actions = [(int(action.action_type[i]), int(action.angle_bin[i]),
+                   float(action.dist_frac[i]), int(action.layer[i])) for i in range(n)]
+        next_obs, next_masks, rewards, dones, infos = vec_env.step(actions)
+
+        buf.add(obs, masks, action, logp, value, rewards, dones)
+        ep_ret += rewards
+        for i in range(n):
+            if dones[i]:
+                ep_returns.append(float(ep_ret[i]))
+                ep_completions.append(infos[i]["nets_done"] / infos[i]["nets_total"])
+                ep_drc.append(infos[i]["drc"])
+                ep_ret[i] = 0.0
+        obs, masks = next_obs, next_masks
+
+    with torch.no_grad():
+        t_obs = {k: torch.from_numpy(v).to(device) for k, v in obs.items()}
+        t_masks = {k: torch.from_numpy(v).to(device) for k, v in masks.items()}
+        _, _, last_v = model.act(t_obs, t_masks)
+    buf.finalize(last_v.cpu(), PPOConfig())
+    stats = {
+        "returns": ep_returns, "completions": ep_completions, "drc": ep_drc,
+        "commit_rate": (commit_taken_steps / commit_legal_steps
+                        if commit_legal_steps else float("nan")),
+        "commit_legal_steps": commit_legal_steps,
+    }
+    return buf, stats, (obs, masks)

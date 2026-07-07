@@ -263,18 +263,26 @@ python -m pcb_router.train --stage 0 --total-steps 500000 \
 The bare environment runs ~190 steps/s on a laptop CPU (profiled and
 vectorized: the observation builder was the hotspot at 78% of step time, not
 the geometry casts); with the policy in the loop, single-env training collects
-~60–70 steps/s. The remaining optimization ladder, in order of payoff: run N
-parallel envs with batched `model.act`, shrink `P_MAX`, and ultimately the C++
-port of `masker.py`+`geometry.py` (the header is already written), which is
-where "millions of frames per second" becomes realistic — and the mask, not
-single collision checks, is the thing to optimize there too.
+~60–70 steps/s on CPU. On a GPU, single-env collection is *worse* than that
+sounds: batch size 1 barely exercises the GPU (expect single-digit % GPU
+utilization, a few hundred MB of VRAM) because Python/PCIe-transfer overhead
+per step dominates the tiny forward pass. `VecRoutingEnv` +
+`collect_rollout_vec` (`env.py`/`ppo.py`) fix this — batch `model.act` across
+`N_ENVS` parallel boards each step (`--n-envs` on the CLI, `N_ENVS` in the
+notebook; try 16–32 on a Colab GPU). GAE is computed correctly per-environment
+(stored as `(steps_per_env, n_envs, ...)`, not naively flattened) before
+handing a normally-shaped flat buffer to the unmodified `PPO.update`. The
+remaining optimization ladder: shrink `P_MAX`, and ultimately the C++ port of
+`masker.py`+`geometry.py` (the header is already written), which is where
+"millions of frames per second" becomes realistic — and the mask, not single
+collision checks, is the thing to optimize there too.
 
 ---
 
 ## 8. Roadmap
 
-1. **Vectorized envs** — batch `model.act` across 8–32 parallel boards
-   (biggest cheap speedup; PPO also benefits from decorrelated samples).
+1. ~~**Vectorized envs**~~ — done: `VecRoutingEnv`/`collect_rollout_vec` batch
+   `model.act` across N parallel boards (`--n-envs`/`N_ENVS`).
 2. **Imitation warm-start** — A* teacher on the same DRC engine, behavior-clone
    its trajectories before PPO. Pure RL from scratch will not conquer large
    boards in hackathon time; the teacher doubles as the evaluation baseline

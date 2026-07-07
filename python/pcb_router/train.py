@@ -1,6 +1,6 @@
 """Curriculum training entry point.
 
-    python -m pcb_router.train --stage 0 --total-steps 200000
+    python -m pcb_router.train --stage 0 --total-steps 200000 --n-envs 16
 
 The curriculum auto-advances when the rolling completion rate clears
 --advance-at (default 0.95) over the last 20 episodes.
@@ -8,6 +8,12 @@ The curriculum auto-advances when the rolling completion rate clears
 Checkpoints are a single .pt file per run containing model weights,
 optimizer state, curriculum stage, and step count (see ppo.save_checkpoint) --
 resuming with --resume restores all of it, not just the weights.
+
+--n-envs > 1 batches model.act across N parallel boards each step instead of
+1 -- on a GPU this is the difference between the GPU sitting mostly idle
+(single-sample forward passes dominated by launch/transfer overhead) and it
+actually being used. Costs more host RAM (N boards' worth of obstacle
+arrays); has no effect on the RL algorithm or reward math, only throughput.
 """
 
 from __future__ import annotations
@@ -22,17 +28,30 @@ import numpy as np
 import torch
 
 from .config import EnvConfig
-from .env import RoutingEnv
+from .env import RoutingEnv, VecRoutingEnv
 from .generator import STAGES, generate_board
 from .model import DualStreamRouter
-from .ppo import PPO, PPOConfig, collect_rollout, load_checkpoint, save_checkpoint
+from .ppo import (PPO, PPOConfig, collect_rollout, collect_rollout_vec,
+                  load_checkpoint, save_checkpoint)
+
+
+def make_env(stage: int, n_envs: int, seed: int):
+    factory = lambda rng, s=stage: generate_board(s, rng)
+    if n_envs > 1:
+        return VecRoutingEnv(factory, n_envs, cfg=EnvConfig(), seed=seed + stage)
+    return RoutingEnv(factory, cfg=EnvConfig(), seed=seed + stage)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", type=int, default=0)
     ap.add_argument("--total-steps", type=int, default=200_000)
-    ap.add_argument("--rollout", type=int, default=2048)
+    ap.add_argument("--rollout", type=int, default=2048,
+                    help="total env-steps collected per PPO update "
+                         "(split across --n-envs when > 1)")
+    ap.add_argument("--n-envs", type=int, default=1,
+                    help="parallel boards per step; >1 batches model.act "
+                         "for GPU throughput (try 16-32 on a Colab GPU)")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--save-dir", default="checkpoints")
     ap.add_argument("--run-name", default="router",
@@ -65,23 +84,29 @@ def main():
         completions.extend(ckpt.get("completions", []))
         print(f"resumed from {resume_from}: stage={stage} steps_done={steps_done}")
 
-    env = RoutingEnv(lambda rng, s=stage: generate_board(s, rng),
-                     cfg=EnvConfig(), seed=args.seed + stage)
+    env = make_env(stage, args.n_envs, args.seed)
+    steps_per_env = max(args.rollout // args.n_envs, 1) if args.n_envs > 1 else args.rollout
 
     carried = (None, None)
-    print(f"device={device} stage={stage} "
+    print(f"device={device} stage={stage} n_envs={args.n_envs} "
           f"({STAGES[min(stage, len(STAGES)-1)].n_nets} nets, "
           f"{STAGES[min(stage, len(STAGES)-1)].layers} layers)", flush=True)
 
     while steps_done < args.total_steps:
         t0 = time.time()
-        buf, stats, carried = collect_rollout(env, model, args.rollout, device,
-                                              *carried)
+        if args.n_envs > 1:
+            buf, stats, carried = collect_rollout_vec(env, model, steps_per_env,
+                                                       device, *carried)
+            steps_this_update = steps_per_env * args.n_envs
+        else:
+            buf, stats, carried = collect_rollout(env, model, args.rollout, device,
+                                                  *carried)
+            steps_this_update = args.rollout
         upd = ppo.update(buf)
-        steps_done += args.rollout
+        steps_done += steps_this_update
         completions.extend(stats["completions"])
 
-        sps = args.rollout / (time.time() - t0)
+        sps = steps_this_update / (time.time() - t0)
         mean_ret = np.mean(stats["returns"]) if stats["returns"] else float("nan")
         mean_cmp = np.mean(completions) if completions else 0.0
         drc_total = int(sum(stats["drc"]))
@@ -107,8 +132,7 @@ def main():
                 and stage < len(STAGES) - 1):
             stage += 1
             print(f"=== curriculum advance -> stage {stage} ===", flush=True)
-            env = RoutingEnv(lambda rng, s=stage: generate_board(s, rng),
-                             cfg=EnvConfig(), seed=args.seed + stage)
+            env = make_env(stage, args.n_envs, args.seed)
             completions.clear()
             carried = (None, None)
             save_checkpoint(ckpt_path, model, ppo, stage, steps_done, completions)

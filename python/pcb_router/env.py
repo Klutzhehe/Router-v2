@@ -291,3 +291,41 @@ class RoutingEnv:
         return {"node_feats": node_feats, "adj": adj, "node_mask": node_mask,
                 "cur_net_mask": cur_net_mask, "points": points,
                 "point_mask": point_mask, "head_state": head_state}
+
+
+class VecRoutingEnv:
+    """N independent RoutingEnv instances stepped together so model.act sees
+    a real batch instead of size-1 -- the fix for a GPU sitting nearly idle
+    while training is bottlenecked on single-sample Python/CPU overhead.
+
+    Each sub-env auto-resets individually the instant it finishes, same as
+    collect_rollout does for a single RoutingEnv, so the batch always holds
+    N valid in-progress transitions.
+    """
+
+    def __init__(self, board_factory: Callable[[np.random.Generator], Board],
+                n_envs: int, cfg: Optional[EnvConfig] = None, seed: int = 0,
+                physics: Optional[PhysicsEvaluator] = None):
+        self.envs = [RoutingEnv(board_factory, cfg=cfg, seed=seed + i, physics=physics)
+                    for i in range(n_envs)]
+        self.n = n_envs
+
+    def reset(self):
+        obs, masks = zip(*(e.reset() for e in self.envs))
+        return self._stack(obs), self._stack(masks)
+
+    def step(self, actions):
+        obs, masks, rewards, dones, infos = [], [], [], [], []
+        for env, a in zip(self.envs, actions):
+            o, m, r, d, info = env.step(a)
+            if d:
+                o, m = env.reset()
+            obs.append(o); masks.append(m)
+            rewards.append(r); dones.append(d); infos.append(info)
+        return (self._stack(obs), self._stack(masks),
+                np.asarray(rewards, dtype=np.float32),
+                np.asarray(dones, dtype=bool), infos)
+
+    @staticmethod
+    def _stack(dicts):
+        return {k: np.stack([d[k] for d in dicts]) for k in dicts[0]}
