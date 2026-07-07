@@ -91,6 +91,15 @@ class PPO:
     def update(self, buf: RolloutBuffer) -> Dict[str, float]:
         cfg, dev = self.cfg, self.device
         T = buf.T
+
+        # Print epoch-level debugging statistics
+        type_fracs = [float((buf.a_type == i).float().mean()) for i in range(3)]
+        print(f"  [DEBUG UPDATE] Buffer size T={T} | "
+              f"Action type fracs: EXTEND={type_fracs[0]:.2%}, VIA={type_fracs[1]:.2%}, COMMIT={type_fracs[2]:.2%} | "
+              f"Mean Reward: {float(buf.reward.mean()):.4f} | "
+              f"Advantage Mean: {float(buf.adv.mean()):.4f}, Std: {float(buf.adv.std()):.4f} | "
+              f"Value Mean: {float(buf.value.mean()):.4f}, Std: {float(buf.value.std()):.4f}", flush=True)
+
         adv = (buf.adv - buf.adv.mean()) / (buf.adv.std() + 1e-8)
         stats = {"pi_loss": 0.0, "v_loss": 0.0, "entropy": 0.0, "clip_frac": 0.0}
         n_updates = 0
@@ -199,6 +208,15 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
             if a[0] == 2:
                 commit_taken_steps += 1
         next_obs, next_masks, reward, done, info = env.step(a)
+        # Debug printing for the first few steps of the epoch (e.g. first 20 steps)
+        if _ < 20 and env.head is not None:
+            types = ["EXTEND", "VIA", "COMMIT"]
+            print(f"  [DEBUG STEP {_}] Head: ({env.head.x:.2f}, {env.head.y:.2f}, L{env.head.layer}) "
+                  f"Target: ({env.head.target_x:.2f}, {env.head.target_y:.2f}) "
+                  f"Budget: {env.budget} | "
+                  f"Action: {types[a[0]]} (angle bin {a[1]}, dist_frac {a[2]:.3f}, layer {a[3]}) | "
+                  f"Reward: {reward:+.4f} | Masks: type={masks['type']}, "
+                  f"angle_sum={masks['angle'].sum()}, layer_sum={masks['layer'].sum()}", flush=True)
         squeezed = RouterAction(*(x.squeeze(0) for x in action))
         buf.add(obs, masks, squeezed, logp.item(), value.item(), reward, done)
         ep_ret += reward
@@ -328,6 +346,16 @@ def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
         actions = [(int(action.action_type[i]), int(action.angle_bin[i]),
                    float(action.dist_frac[i]), int(action.layer[i])) for i in range(n)]
         next_obs, next_masks, rewards, dones, infos = vec_env.step(actions)
+        # Debug printing for the first environment (env 0) for the first 20 steps
+        if _ < 20 and vec_env.envs[0].head is not None:
+            types = ["EXTEND", "VIA", "COMMIT"]
+            env0 = vec_env.envs[0]
+            print(f"  [DEBUG ENV0 STEP {_}] Head: ({env0.head.x:.2f}, {env0.head.y:.2f}, L{env0.head.layer}) "
+                  f"Target: ({env0.head.target_x:.2f}, {env0.head.target_y:.2f}) "
+                  f"Budget: {env0.budget} | "
+                  f"Action: {types[actions[0][0]]} (angle bin {actions[0][1]}, dist_frac {actions[0][2]:.3f}, layer {actions[0][3]}) | "
+                  f"Reward: {rewards[0]:+.4f} | Masks: type={masks['type'][0]}, "
+                  f"angle_sum={masks['angle'][0].sum()}, layer_sum={masks['layer'][0].sum()}", flush=True)
 
         buf.add(obs, masks, action, logp, value, rewards, dones)
         ep_ret += rewards
