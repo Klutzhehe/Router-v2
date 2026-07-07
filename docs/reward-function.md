@@ -41,7 +41,17 @@ Notes:
   curriculum board and a 1000-pin BGA produce rewards on the same scale.
   The agent is effectively penalized on its *detour factor*, not raw mm.
 - **Shaping is potential-based** (Ng, Harada & Russell, 1999), so it changes
-  the learning dynamics but not the optimal policy.
+  the learning dynamics but not the optimal policy — **only if $\Phi$ is
+  evaluated consistently across the transition.** $\Phi(s) = -d_{\mathrm{geo}}(s)/\mathrm{HPWL}_n$
+  is defined relative to whichever net is "current," so it is a valid
+  potential *within one net's routing only*. The instant a net ends —
+  COMMIT, budget timeout, or the engine skipping an unroutable net — treat
+  that transition's $\Phi(s_{t+1})$ as $0$ (standard terminal-boundary
+  convention for PBRS), not the next net's $\Phi$. Evaluating it on the next
+  net breaks the telescoping sum the invariance proof relies on and injects
+  a large reward tied to the next net's geometry, unrelated to the action
+  just taken (measured: a completing COMMIT paid ~8.0 instead of ~10.3 of
+  its own $C$, clawed back by the next net's unrelated starting potential).
 - **β must exceed λ₁.** With β = λ₁ the shaping bonus for moving toward the
   target *exactly cancels* the length penalty: progress earns zero immediate
   reward, every other movement is negative, and "take minimum-length steps

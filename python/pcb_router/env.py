@@ -106,6 +106,7 @@ class RoutingEnv:
         rw, rules = self.cfg.reward, self.board.rules
         net = self.board.nets[self.order[self.cur]]
         hpwl = net.hpwl
+        cur_before = self.cur
         phi_before = self._phi()
         r = 0.0
 
@@ -168,8 +169,21 @@ class RoutingEnv:
             r -= rw.lam3 * phys["impedance"] + rw.lam4 * phys["skew"] \
                 + rw.lam5 * phys["crosstalk"]
 
-        # Potential-based shaping (policy-invariant).
-        r += rw.beta * (rw.gamma * self._phi() - phi_before)
+        # Potential-based shaping (policy-invariant). Phi is defined relative
+        # to whichever net is "current" (see _phi), so it is only a valid
+        # single potential function *within* one net's routing. The instant
+        # a net ends this step -- COMMIT, budget timeout, or _skip_dead_nets
+        # advancing past an unroutable net -- self.cur has already moved on,
+        # and self._phi() would silently jump to the NEXT net's (unrelated)
+        # potential. That breaks the telescoping sum the policy-invariance
+        # proof depends on and injects a large, semi-random reward at every
+        # net boundary (measured: a completing COMMIT paid ~8.0-8.1 instead
+        # of ~10.3, clawing back a third of C on every net that wasn't last).
+        # Standard PBRS convention: treat any such boundary as terminal for
+        # this net's potential, i.e. phi_after = 0.
+        net_changed = self.cur != cur_before
+        phi_after = 0.0 if (self.done or net_changed) else self._phi()
+        r += rw.beta * (rw.gamma * phi_after - phi_before)
 
         info = {"nets_done": len(self.completed),
                 "nets_total": len(self.board.nets),
