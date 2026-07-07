@@ -25,14 +25,14 @@ class PPOConfig:
     gamma: float = 0.995
     gae_lambda: float = 0.95
     clip: float = 0.2
-    epochs: int = 4
+    epochs: int = 2
     minibatch: int = 256
-    lr: float = 1e-4          # was 3e-4 -- see note by the value-clipping code below
+    lr: float = 5e-5          # lowered from 1e-4 for gentler PPO updates
     vf_coef: float = 0.5
     vf_clip: float = 10.0     # value-clip range in RETURN units (~ one net
                               # completion C); NOT the 0.2 policy-ratio clip --
                               # see the note by the value-clipping code below
-    ent_coef: float = 0.01
+    ent_coef: float = 0.02    # raised from 0.01 to encourage exploration and prevent collapse
     max_grad_norm: float = 0.5
 
 

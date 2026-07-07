@@ -125,6 +125,7 @@ class DualStreamRouter(nn.Module):
         a_mask = _safe_mask(masks["angle"])
         l_mask = _safe_mask(masks["layer"])
         ab = 1.0 + nn.functional.softplus(self.dist_head(z))    # alpha,beta >= 1
+        ab = torch.clamp(ab, max=20.0)                          # stabilize Beta policy against gradient explosion
         return {
             "type": Categorical(logits=self.type_head(z) + (1 - t_mask) * MASK_FILL),
             "angle": Categorical(logits=self.angle_head(z) + (1 - a_mask) * MASK_FILL),
