@@ -11,9 +11,13 @@ Top-layer copper is solid; inner/bottom layers get dashed lines and lower alpha.
 from __future__ import annotations
 
 import argparse
+import sys
 
 import matplotlib
-matplotlib.use("Agg")
+if __name__ == "__main__" and "ipykernel" not in sys.modules:
+    # Headless CLI use only -- importing this module from a notebook must
+    # not clobber the interactive/inline backend the notebook already set up.
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt          # noqa: E402
 import numpy as np                        # noqa: E402
 
@@ -78,9 +82,9 @@ def rollout_and_render(stage: int, out: str, checkpoint: str | None,
     if checkpoint:
         import torch
         from .model import DualStreamRouter
-        from .ppo import to_torch
+        from .ppo import load_checkpoint, to_torch
         model = DualStreamRouter()
-        model.load_state_dict(torch.load(checkpoint, map_location="cpu"))
+        load_checkpoint(checkpoint, model, device="cpu")
         model.eval()
         done = False
         while not done:

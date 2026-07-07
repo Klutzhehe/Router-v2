@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -122,6 +123,34 @@ class PPO:
                 n_updates += 1
 
         return {k: v / max(n_updates, 1) for k, v in stats.items()}
+
+
+def save_checkpoint(path, model: DualStreamRouter, ppo: "PPO", stage: int,
+                    steps_done: int, completions, history: Optional[list] = None):
+    """Full training state, not just weights: resuming from this must not
+    reset Adam momentum, forget the curriculum stage, or lose step count."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    tmp = str(path) + ".tmp"
+    torch.save({
+        "model": model.state_dict(),
+        "optimizer": ppo.opt.state_dict(),
+        "stage": stage,
+        "steps_done": steps_done,
+        "completions": list(completions),
+        "history": history or [],
+    }, tmp)
+    Path(tmp).replace(path)   # atomic on the same filesystem: no half-written files
+
+
+def load_checkpoint(path, model: DualStreamRouter, ppo: Optional["PPO"] = None,
+                    device: str = "cpu") -> dict:
+    ckpt = torch.load(path, map_location=device)
+    if "model" not in ckpt:      # back-compat: older checkpoints were a bare state_dict
+        ckpt = {"model": ckpt, "stage": 0, "steps_done": 0, "completions": [], "history": []}
+    model.load_state_dict(ckpt["model"])
+    if ppo is not None and ckpt.get("optimizer"):
+        ppo.opt.load_state_dict(ckpt["optimizer"])
+    return ckpt
 
 
 def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
