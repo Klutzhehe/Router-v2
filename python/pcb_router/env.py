@@ -13,7 +13,7 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 
 from . import geometry as geo
-from .board import Board, KIND_PAD
+from .board import Board, KIND_PAD, KIND_KEEPOUT
 from .config import (A_COMMIT, A_EXTEND, A_VIA, EnvConfig, HEAD_FEAT_DIM,
                      MAX_LAYERS, N_ANGLE_BINS, N_MAX_PINS, NODE_FEAT_DIM,
                      P_MAX, POINT_FEAT_DIM)
@@ -277,6 +277,48 @@ class RoutingEnv:
                              np.zeros(len(m_idx)),
                              (arr.cap_net[m_idx] == cur_net).astype(float),
                              np.zeros(len(m_idx)), np.ones(len(m_idx))))
+
+            # --- Add board boundaries as keep-out points to the point cloud ---
+            # Project head position to the four walls and sample points along them
+            # if they fall within the observation window W.
+            # Left wall (x = 0)
+            if hx < W:
+                dy_max = np.sqrt(W**2 - hx**2)
+                y_min, y_max = max(0.0, hy - dy_max), min(b.height, hy + dy_max)
+                ys = np.arange(y_min, y_max + 0.1, 1.0)
+                if len(ys) > 0:
+                    cols.append((np.sqrt(hx**2 + (ys - hy)**2), np.stack([-np.full_like(ys, hx), ys - hy], axis=-1),
+                                 np.zeros(len(ys)), np.full(len(ys), b.num_layers - 1),
+                                 np.full(len(ys), KIND_KEEPOUT), np.zeros(len(ys)), np.zeros(len(ys)), np.ones(len(ys))))
+            # Right wall (x = width)
+            rx = b.width - hx
+            if rx < W:
+                dy_max = np.sqrt(W**2 - rx**2)
+                y_min, y_max = max(0.0, hy - dy_max), min(b.height, hy + dy_max)
+                ys = np.arange(y_min, y_max + 0.1, 1.0)
+                if len(ys) > 0:
+                    cols.append((np.sqrt(rx**2 + (ys - hy)**2), np.stack([np.full_like(ys, rx), ys - hy], axis=-1),
+                                 np.zeros(len(ys)), np.full(len(ys), b.num_layers - 1),
+                                 np.full(len(ys), KIND_KEEPOUT), np.zeros(len(ys)), np.zeros(len(ys)), np.ones(len(ys))))
+            # Top wall (y = 0)
+            if hy < W:
+                dx_max = np.sqrt(W**2 - hy**2)
+                x_min, x_max = max(0.0, hx - dx_max), min(b.width, hx + dx_max)
+                xs = np.arange(x_min, x_max + 0.1, 1.0)
+                if len(xs) > 0:
+                    cols.append((np.sqrt(hy**2 + (xs - hx)**2), np.stack([xs - hx, -np.full_like(xs, hy)], axis=-1),
+                                 np.zeros(len(xs)), np.full(len(xs), b.num_layers - 1),
+                                 np.full(len(xs), KIND_KEEPOUT), np.zeros(len(xs)), np.zeros(len(xs)), np.ones(len(xs))))
+            # Bottom wall (y = height)
+            by = b.height - hy
+            if by < W:
+                dx_max = np.sqrt(W**2 - by**2)
+                x_min, x_max = max(0.0, hx - dx_max), min(b.width, hx + dx_max)
+                xs = np.arange(x_min, x_max + 0.1, 1.0)
+                if len(xs) > 0:
+                    cols.append((np.sqrt(by**2 + (xs - hx)**2), np.stack([xs - hx, np.full_like(xs, by)], axis=-1),
+                                 np.zeros(len(xs)), np.full(len(xs), b.num_layers - 1),
+                                 np.full(len(xs), KIND_KEEPOUT), np.zeros(len(xs)), np.zeros(len(xs)), np.ones(len(xs))))
 
             # Target pad is always visible, even outside the window (pri 0).
             tp = b.pads[self.head.target_pad]
