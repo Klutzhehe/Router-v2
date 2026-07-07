@@ -160,7 +160,8 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
     if obs is None:
         obs, masks = env.reset()
     buf = RolloutBuffer(T, obs, device)
-    ep_returns, ep_completions, ep_ret = [], [], 0.0
+    ep_returns, ep_completions, ep_drc, ep_ret = [], [], [], 0.0
+    commit_legal_steps = commit_taken_steps = 0
 
     for _ in range(T):
         t_obs = to_torch(obs, device)
@@ -169,6 +170,10 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
         action, logp, value = model.act(t_obs, t_masks)
         a = (int(action.action_type), int(action.angle_bin),
              float(action.dist_frac), int(action.layer))
+        if masks["type"][2]:                      # A_COMMIT legal this step
+            commit_legal_steps += 1
+            if a[0] == 2:
+                commit_taken_steps += 1
         next_obs, next_masks, reward, done, info = env.step(a)
         squeezed = RouterAction(*(x.squeeze(0) for x in action))
         buf.add(obs, masks, squeezed, logp.item(), value.item(), reward, done)
@@ -176,6 +181,7 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
         if done:
             ep_returns.append(ep_ret)
             ep_completions.append(info["nets_done"] / info["nets_total"])
+            ep_drc.append(info["drc"])
             ep_ret = 0.0
             next_obs, next_masks = env.reset()
         obs, masks = next_obs, next_masks
@@ -185,4 +191,12 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
                                  {k: torch.from_numpy(v).unsqueeze(0).to(device)
                                   for k, v in masks.items()})
     buf.compute_gae(float(last_v.item()), PPOConfig())
-    return buf, {"returns": ep_returns, "completions": ep_completions}, (obs, masks)
+    stats = {
+        "returns": ep_returns, "completions": ep_completions, "drc": ep_drc,
+        # When COMMIT is legal (head within snap distance of target), how
+        # often does the policy actually take it vs. keep extending past it?
+        "commit_rate": (commit_taken_steps / commit_legal_steps
+                        if commit_legal_steps else float("nan")),
+        "commit_legal_steps": commit_legal_steps,
+    }
+    return buf, stats, (obs, masks)

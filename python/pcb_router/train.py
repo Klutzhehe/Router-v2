@@ -84,14 +84,20 @@ def main():
         sps = args.rollout / (time.time() - t0)
         mean_ret = np.mean(stats["returns"]) if stats["returns"] else float("nan")
         mean_cmp = np.mean(completions) if completions else 0.0
+        drc_total = int(sum(stats["drc"]))
         print(f"steps {steps_done:>8}  stage {stage}  "
               f"ep_return {mean_ret:8.2f}  completion {mean_cmp:5.1%}  "
               f"entropy {upd['entropy']:6.3f}  pi {upd['pi_loss']:+.4f}  "
-              f"v {upd['v_loss']:8.3f}  {sps:6.0f} steps/s", flush=True)
+              f"v {upd['v_loss']:8.3f}  drc {drc_total}  "
+              f"commit_rate {stats['commit_rate']:5.1%}  {sps:6.0f} steps/s", flush=True)
+        if drc_total > 0:
+            print(f"  !! DRC={drc_total} this rollout -- geometry-kernel bug, "
+                  f"not a hyperparameter issue. See CLAUDE.md invariant #2.", flush=True)
 
         with open(log_path, "a") as f:
             f.write(json.dumps({"steps_done": steps_done, "stage": stage,
                                 "ep_return": mean_ret, "completion": mean_cmp,
+                                "drc": drc_total, "commit_rate": stats["commit_rate"],
                                 **upd}) + "\n")
 
         save_checkpoint(ckpt_path, model, ppo, stage, steps_done, completions)
