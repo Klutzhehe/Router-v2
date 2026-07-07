@@ -127,6 +127,7 @@ from the physics hook.
 Router2/
 ├── PROJECT.md                    ← this document
 ├── CLAUDE.md                     ← working notes for AI pair-programmers
+├── PCB_Router_Training.ipynb     ← Colab notebook: train with live viz + Drive checkpoints
 ├── requirements.txt              ← numpy, torch (both preinstalled on Colab)
 ├── docs/reward-function.md       ← reward math, single source of truth
 ├── cpp/include/pcb/action_masker.hpp   ← C++ port specification (future)
@@ -139,8 +140,10 @@ Router2/
     │   ├── env.py                ← RL environment + physics hook
     │   ├── generator.py          ← curriculum board generator
     │   ├── model.py              ← DualStreamRouter (pure torch)
-    │   ├── ppo.py                ← PPO + GAE + rollout collection
-    │   └── train.py              ← curriculum training entry point
+    │   ├── ppo.py                ← PPO + GAE + rollout collection + checkpoint I/O
+    │   ├── train.py              ← curriculum training entry point (CLI)
+    │   ├── render.py             ← headless CLI board renderer (Agg backend)
+    │   └── viz.py                ← inline/live training viz for the notebook
     └── tests/
         ├── test_geometry.py      ← analytic casts vs brute-force marching
         ├── test_env.py           ← legality fuzz + independent DRC check
@@ -193,6 +196,26 @@ python tests/test_env.py
 python tests/test_model_ppo.py
 ```
 
+### Expected training progress, per stage, and what to do if it stalls
+
+Extrapolated from the single measured run above (stage 0 only) — treat step
+counts as rough budgets, not guarantees. The full diagnostic checklist (entropy
+collapse, flat completion + flat pi_loss, exploding value loss, etc.) lives in
+[`PCB_Router_Training.ipynb`](PCB_Router_Training.ipynb) since that's where
+you'll actually be watching it happen.
+
+| Stage | Board | Rough steps to ~90%+ completion |
+|---|---|---|
+| 0 | 3 nets, 2 layers | 100k–400k |
+| 1 | 6 nets, 2 layers, keep-outs | 200k–600k |
+| 2 | 8 nets, +cross-layer pads (forces vias) | 300k–800k |
+| 3 | 12 nets, 4 layers | 500k–1.5M |
+| 4 | 20 nets, 6 layers | 1M–3M |
+| 5 | 30 nets, 12 layers | 2M+, likely needs imitation warm-start (§8) |
+
+The one hard invariant, independent of budget: **DRC count must always be 0**.
+If it isn't, stop and treat it as a geometry-kernel bug, not a training issue.
+
 ---
 
 ## 7. How to run
@@ -206,52 +229,34 @@ python -m pcb_router.train --stage 0 --total-steps 200000
 python -m pcb_router.train --stage 1 --resume checkpoints/router_stage0.pt
 ```
 
-### On Google Colab (via GitHub)
+### On Google Colab
 
-Repo: https://github.com/Klutzhehe/Router-v2 — this is the workflow going
-forward: push code changes from your machine, `git pull` in Colab, no more
-zip/upload. Mount Drive first so checkpoints survive runtime resets.
+Use [`PCB_Router_Training.ipynb`](PCB_Router_Training.ipynb) at the repo root —
+open it directly from GitHub in Colab (File → Open notebook → GitHub tab, or
+`https://colab.research.google.com/github/Klutzhehe/Router-v2/blob/main/PCB_Router_Training.ipynb`).
+It mounts Drive, clones/pulls the repo, trains with live per-epoch plots
+(completion rate, return, entropy/value loss) and periodic inline board
+snapshots, and checkpoints every epoch to Drive (model weights + optimizer
+state + curriculum stage + step count, so re-running after a disconnect
+resumes exactly, not just from bare weights). It also documents, per
+curriculum stage, roughly how many steps to expect before ~90%+ completion
+and what to do if a stage stalls short of that (see the notebook's "Expected
+behavior per curriculum stage" section, reproduced in outline in §6 above).
 
-```python
-from google.colab import drive
-drive.mount("/content/drive")
+Nothing to `pip install` — `numpy` and `torch` ship with Colab. Checkpoints
+and the training history log land in `/content/drive/MyDrive/Router-v2-checkpoints/`,
+not in the repo (see `.gitignore`) — Drive is the right home for that, not git.
 
-REPO_DIR = "/content/drive/MyDrive/Router-v2"
-import os
-if not os.path.isdir(REPO_DIR):
-    !git clone https://github.com/Klutzhehe/Router-v2 "{REPO_DIR}"
-%cd {REPO_DIR}/python
+For CLI-only use (no notebook), `pcb_router.train` supports the same resumable
+checkpoint format:
+
+```bash
+python -m pcb_router.train --stage 0 --total-steps 500000 \
+    --save-dir /content/drive/MyDrive/Router-v2-checkpoints --run-name router
+# re-running with the same --save-dir/--run-name auto-resumes (weights +
+# optimizer state + stage + step count), no separate --resume flag needed
+# unless you want to load a checkpoint under a different name.
 ```
-
-Re-running the clone cell after code changes on GitHub:
-
-```python
-%cd {REPO_DIR}
-!git pull
-%cd {REPO_DIR}/python
-```
-
-Train (GPU runtime accelerates the model; the env is CPU NumPy):
-
-```python
-!python -m pcb_router.train --stage 0 --total-steps 500000 --device auto \
-    --save-dir /content/drive/MyDrive/Router-v2-checkpoints
-```
-
-Nothing to `pip install` — `numpy` and `torch` ship with Colab. Resuming
-after a runtime reset just needs `--resume`:
-
-```python
-!python -m pcb_router.train --stage 0 \
-    --resume /content/drive/MyDrive/Router-v2-checkpoints/router_stage0.pt \
-    --save-dir /content/drive/MyDrive/Router-v2-checkpoints
-```
-
-Checkpoints and rendered PNGs are gitignored (see `.gitignore`) — they live on
-Drive, not in the repo. If you want a trained checkpoint back on your local
-machine, download it from Drive (or `git add -f` a specific file if you
-really want it version-controlled, but Drive is the better home for large
-binaries).
 
 ### Throughput expectations
 

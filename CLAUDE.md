@@ -18,9 +18,15 @@ All commands run from `python/`:
 python tests/test_geometry.py      # analytic casts vs brute-force marching
 python tests/test_env.py           # legality fuzz + independent DRC re-check
 python tests/test_model_ppo.py     # model + PPO smoke tests
-python -m pcb_router.train --stage 0 --total-steps 200000   # train
-python -m pcb_router.train --stage 1 --resume checkpoints/router_stage0.pt
+python -m pcb_router.train --stage 0 --total-steps 200000 --save-dir checkpoints --run-name router
 ```
+
+Re-running with the same `--save-dir`/`--run-name` auto-resumes (weights,
+optimizer state, curriculum stage, and step count all round-trip through
+`ppo.save_checkpoint`/`load_checkpoint`) — no separate `--resume` flag needed
+unless loading a checkpoint under a different name. For Colab, use
+`PCB_Router_Training.ipynb` at the repo root instead of the CLI: same
+checkpoint format, plus live per-epoch plots and inline board renders.
 
 Tests are plain scripts with main guards (no pytest dependency). They insert
 `python/` into sys.path themselves.
@@ -57,6 +63,16 @@ picks an action → `ppo.py`/`train.py` learn from it. All obstacles are discs
    curriculum transfer breaks. Shaping must stay potential-based.
 6. **γ appears twice** — `RewardWeights.gamma` (shaping) and `PPOConfig.gamma`
    (GAE). Keep them equal.
+7. **Checkpoints are a dict, not a bare state_dict.** `save_checkpoint`/
+   `load_checkpoint` in `ppo.py` round-trip `{model, optimizer, stage,
+   steps_done, completions, history}`. `load_checkpoint` back-compat-loads a
+   bare state_dict (old format) but treats it as stage 0 / step 0 — don't
+   assume an old checkpoint file carries stage/step info.
+8. **`render.py` vs `viz.py`**: `render.py` is the headless CLI tool and only
+   sets the `Agg` matplotlib backend when run as `__main__`, specifically so
+   importing it from a notebook doesn't clobber the inline backend `viz.py`
+   depends on. Don't move that `matplotlib.use("Agg")` call back to
+   module-import time.
 
 ## Conventions
 
