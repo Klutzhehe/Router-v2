@@ -60,7 +60,11 @@ picks an action → `ppo.py`/`train.py` learn from it. All obstacles are discs
    caps, which changes model input shapes and invalidates old checkpoints.
 5. **Reward changes go through docs/reward-function.md first.** Length
    penalties are HPWL-normalized (detour factor) — keep them that way or
-   curriculum transfer breaks. Shaping must stay potential-based.
+   curriculum transfer breaks. Shaping must stay potential-based *within a
+   net*, and the shaping term is deliberately omitted on net-boundary
+   transitions — never reintroduce a boundary payout (a Φ=0 refund at
+   timeouts paid the agent for failing far from the target and taught
+   wall-hugging; see the boundary note in docs/reward-function.md).
 6. **γ appears twice** — `RewardWeights.gamma` (shaping) and `PPOConfig.gamma`
    (GAE). Keep them equal.
 7. **Checkpoints are a dict, not a bare state_dict.** `save_checkpoint`/

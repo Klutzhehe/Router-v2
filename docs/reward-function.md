@@ -40,18 +40,34 @@ Notes:
 - **Length is normalized per net** by $\mathrm{HPWL}_n$ so that a 5-component
   curriculum board and a 1000-pin BGA produce rewards on the same scale.
   The agent is effectively penalized on its *detour factor*, not raw mm.
-- **Shaping is potential-based** (Ng, Harada & Russell, 1999), so it changes
-  the learning dynamics but not the optimal policy — **only if $\Phi$ is
-  evaluated consistently across the transition.** $\Phi(s) = -d_{\mathrm{geo}}(s)/\mathrm{HPWL}_n$
-  is defined relative to whichever net is "current," so it is a valid
-  potential *within one net's routing only*. The instant a net ends —
-  COMMIT, budget timeout, or the engine skipping an unroutable net — treat
-  that transition's $\Phi(s_{t+1})$ as $0$ (standard terminal-boundary
-  convention for PBRS), not the next net's $\Phi$. Evaluating it on the next
-  net breaks the telescoping sum the invariance proof relies on and injects
-  a large reward tied to the next net's geometry, unrelated to the action
-  just taken (measured: a completing COMMIT paid ~8.0 instead of ~10.3 of
-  its own $C$, clawed back by the next net's unrelated starting potential).
+- **Shaping is potential-based *within a net*, and the shaping term is
+  omitted entirely on net-boundary transitions** (COMMIT, budget timeout, or
+  the engine skipping an unroutable net). $\Phi(s) = -d_{\mathrm{geo}}(s)/\mathrm{HPWL}_n$
+  is defined relative to whichever net is "current," so each net's routing
+  has its own potential function and the boundary transition has no
+  well-defined PBRS term. Both "obvious" boundary conventions were tried and
+  measured to be actively harmful:
+  1. *Evaluating $\Phi(s_{t+1})$ on the next net* leaks that net's unrelated
+     geometry into the reward (a completing COMMIT paid ~8.0 instead of
+     ~10.3 of its own $C$).
+  2. *The textbook convention $\Phi(\text{boundary}) = 0$* refunds
+     $+\beta\,d_{\mathrm{end}}/\mathrm{HPWL}_n$ at every budget timeout — a
+     concentrated reward for being **far** from the target when the net is
+     abandoned (measured +3.3 for one wall-hugging trajectory; up to ~+28 on
+     stage 0 for short nets — more than completing pays). This is
+     policy-invariant in exact theory (the wander that inflated
+     $d_{\mathrm{end}}$ was charged incrementally on the way out), but with
+     GAE($\lambda$) truncating credit and an imperfect critic, the spike
+     lands on the wander/wall-jiggle actions immediately before it and
+     *teaches* wall-hugging.
+  Omitting the boundary term keeps the incremental progress payments and
+  simply never refunds the residual. The un-refunded residual is equivalent
+  to a terminal penalty of $\beta\,d_{\mathrm{end}}/\mathrm{HPWL}_n$ per
+  unfinished net: failure graded by final distance to target — a gradient
+  the flat $F$ penalty cannot provide. Near-target COMMITs have ~zero
+  residual, so completions still pay their full $C$. This is a deliberate,
+  bounded deviation from strict PBRS; any future change to shaping must not
+  reintroduce a positive boundary payout.
 - **β must exceed λ₁.** With β = λ₁ the shaping bonus for moving toward the
   target *exactly cancels* the length penalty: progress earns zero immediate
   reward, every other movement is negative, and "take minimum-length steps
