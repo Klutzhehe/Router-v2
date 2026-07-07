@@ -42,6 +42,16 @@ Notes:
   The agent is effectively penalized on its *detour factor*, not raw mm.
 - **Shaping is potential-based** (Ng, Harada & Russell, 1999), so it changes
   the learning dynamics but not the optimal policy.
+- **β must exceed λ₁.** With β = λ₁ the shaping bonus for moving toward the
+  target *exactly cancels* the length penalty: progress earns zero immediate
+  reward, every other movement is negative, and "take minimum-length steps
+  until the budget runs out" becomes a strong local optimum. This was observed
+  empirically (stage 0, 174k steps): the policy walked to the board edge,
+  aimed *away* from the target (mean cos −0.36 vs the target direction), and
+  collapsed its step length to ~0.15 mm while completion decayed to ~5%.
+  With β > λ₁ each mm of progress toward the target is net-positive
+  ((β−λ₁)·δ/HPWL), standing still earns 0, and the local optimum dissolves —
+  while the shaping term stays potential-based, hence still policy-invariant.
 - **The DRC term should never fire** — the action mask makes illegal moves
   unsamplable. It exists as a safety net for floating-point edge cases in the
   geometry kernel; if it fires more than ~0 times per million steps, that is a
@@ -82,7 +92,7 @@ $$
 | $\lambda_3$ | $5.0$ | Per unit of relative impedance error |
 | $\lambda_4$ | $2.0$ | Per ps of excess skew (tune per stack-up) |
 | $\lambda_5$ | $1.0$ | Solver-metric dependent |
-| $\beta$ | $1.0$ | Shaping weight |
+| $\beta$ | $3.0$ | Shaping weight — **must exceed $\lambda_1$** (see note above); was $1.0$, which made progress reward-neutral and "don't move" a local optimum |
 | $\gamma$ | $0.995$ | Long horizons on large boards |
 
 Curriculum stages may anneal $\lambda_{3..5}$ from 0 upward: early training

@@ -23,12 +23,16 @@ class StageSpec:
     n_keepouts: int
     cross_layer_prob: float  # chance a net's second pad sits on the bottom layer
     pad_r: float = 0.5
+    # COMMIT legal within this of the target (mm). Wider on early stages so an
+    # unskilled policy stumbles into completions often enough for the sparse
+    # C reward to be learnable; anneals to the DesignRules default (1.0).
+    commit_snap: float = 1.0
 
 
 STAGES = [
-    StageSpec(layers=2,  size=20.0, n_nets=3,  n_keepouts=0, cross_layer_prob=0.0),
-    StageSpec(layers=2,  size=25.0, n_nets=6,  n_keepouts=2, cross_layer_prob=0.0),
-    StageSpec(layers=2,  size=25.0, n_nets=8,  n_keepouts=2, cross_layer_prob=0.3),
+    StageSpec(layers=2,  size=20.0, n_nets=3,  n_keepouts=0, cross_layer_prob=0.0, commit_snap=2.5),
+    StageSpec(layers=2,  size=25.0, n_nets=6,  n_keepouts=2, cross_layer_prob=0.0, commit_snap=2.0),
+    StageSpec(layers=2,  size=25.0, n_nets=8,  n_keepouts=2, cross_layer_prob=0.3, commit_snap=1.5),
     StageSpec(layers=4,  size=30.0, n_nets=12, n_keepouts=4, cross_layer_prob=0.3),
     StageSpec(layers=6,  size=40.0, n_nets=20, n_keepouts=8, cross_layer_prob=0.4),
     StageSpec(layers=12, size=50.0, n_nets=30, n_keepouts=12, cross_layer_prob=0.5),
@@ -38,7 +42,7 @@ STAGES = [
 def generate_board(stage: int, rng: np.random.Generator,
                    rules: DesignRules | None = None) -> Board:
     spec = STAGES[min(stage, len(STAGES) - 1)]
-    rules = rules or DesignRules()
+    rules = rules or DesignRules(commit_snap=spec.commit_snap)
     assert 2 * spec.n_nets <= N_MAX_PINS, "raise N_MAX_PINS for this stage"
 
     board = Board(width=spec.size, height=spec.size,

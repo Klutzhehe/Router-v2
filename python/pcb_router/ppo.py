@@ -29,6 +29,9 @@ class PPOConfig:
     minibatch: int = 256
     lr: float = 1e-4          # was 3e-4 -- see note by the value-clipping code below
     vf_coef: float = 0.5
+    vf_clip: float = 10.0     # value-clip range in RETURN units (~ one net
+                              # completion C); NOT the 0.2 policy-ratio clip --
+                              # see the note by the value-clipping code below
     ent_coef: float = 0.01
     max_grad_norm: float = 0.5
 
@@ -108,18 +111,19 @@ class PPO:
                 s2 = torch.clamp(ratio, 1 - cfg.clip, 1 + cfg.clip) * a
                 pi_loss = -torch.min(s1, s2).mean()
 
-                # PPO2-style value clipping: the policy ratio is clipped, but
-                # nothing bounded how far the critic could move per update --
-                # a single large TD residual (e.g. one lucky net completion in
-                # the batch) could yank the value function, which then feeds
-                # a distorted baseline back into the next rollout's advantages
-                # and destabilizes the policy too (return/entropy/v_loss all
-                # spiking together is exactly that pattern). Clip value moves
-                # the same way ratio moves are clipped, using the pre-update
-                # value estimate already stored in the buffer.
+                # PPO2-style value clipping, in RETURN units. The first version
+                # of this reused the policy's 0.2 ratio clip -- but 0.2 is a
+                # *ratio* bound, and applied to values (which span tens of
+                # units here: C=+10 per net, terminal B/F) it capped the critic
+                # to +-0.2 of movement per update. The critic could never learn
+                # that being near a target is worth ~C, which starved the
+                # policy of its only dense credit signal. vf_clip=10 (one net
+                # completion) still stops a single freak batch from yanking
+                # the critic across the whole return range, but lets it track
+                # the task's actual value scale.
                 old_value = buf.value[idx].to(dev)
                 ret = buf.ret[idx].to(dev)
-                value_clipped = old_value + (value - old_value).clamp(-cfg.clip, cfg.clip)
+                value_clipped = old_value + (value - old_value).clamp(-cfg.vf_clip, cfg.vf_clip)
                 v_loss = 0.5 * torch.max((value - ret).pow(2),
                                          (value_clipped - ret).pow(2)).mean()
                 loss = pi_loss + cfg.vf_coef * v_loss - cfg.ent_coef * entropy.mean()

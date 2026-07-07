@@ -22,8 +22,9 @@ import torch
 import torch.nn as nn
 from torch.distributions import Beta, Categorical
 
-from .config import (HEAD_FEAT_DIM, MAX_LAYERS, N_ACTION_TYPES, N_ANGLE_BINS,
-                     NODE_FEAT_DIM, POINT_FEAT_DIM)
+from .config import (A_EXTEND, A_VIA, HEAD_FEAT_DIM, MAX_LAYERS,
+                     N_ACTION_TYPES, N_ANGLE_BINS, NODE_FEAT_DIM,
+                     POINT_FEAT_DIM)
 
 MASK_FILL = -1e9
 
@@ -133,10 +134,18 @@ class DualStreamRouter(nn.Module):
 
     @staticmethod
     def _joint_logp(d, a: RouterAction) -> torch.Tensor:
+        """Log-prob of the hybrid action, conditional on the action type.
+
+        Sub-actions the env ignores for this type (angle/dist for VIA and
+        COMMIT, layer for EXTEND and COMMIT) are excluded: counting them
+        credits whatever noise happened to be sampled alongside e.g. a +10
+        COMMIT to heads that had no causal effect on the reward."""
+        is_extend = (a.action_type == A_EXTEND).float()
+        is_via = (a.action_type == A_VIA).float()
         return (d["type"].log_prob(a.action_type)
-                + d["angle"].log_prob(a.angle_bin)
-                + d["dist"].log_prob(a.dist_frac)
-                + d["layer"].log_prob(a.layer))
+                + is_extend * (d["angle"].log_prob(a.angle_bin)
+                               + d["dist"].log_prob(a.dist_frac))
+                + is_via * d["layer"].log_prob(a.layer))
 
     # ------------------------------------------------------------------- API
     @torch.no_grad()
@@ -166,5 +175,11 @@ class DualStreamRouter(nn.Module):
         """Log-prob / entropy / value for PPO's surrogate loss."""
         z = self._fuse(obs)
         d = self._dists(z, masks)
-        entropy = sum(dist.entropy() for dist in d.values())
+        # Entropy of the hierarchical policy: each sub-head counts in
+        # proportion to how often its branch is actually taken (mirrors the
+        # conditional log-prob in _joint_logp).
+        p = d["type"].probs
+        entropy = (d["type"].entropy()
+                   + p[..., A_EXTEND] * (d["angle"].entropy() + d["dist"].entropy())
+                   + p[..., A_VIA] * d["layer"].entropy())
         return self._joint_logp(d, action), entropy, self.critic(z).squeeze(-1)
