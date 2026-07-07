@@ -188,8 +188,18 @@ class RoutingEnv:
         # unfinished net -- failure graded by how close the head got, which
         # is the gradient a flat F cannot provide. Near-target commits have
         # ~zero residual, so completions still pay their full C.
+        #
+        # The difference is deliberately UNDISCOUNTED (no gamma on phi_after).
+        # The textbook beta*(gamma*phi' - phi) form pays beta*(1-gamma)*|phi|
+        # per step for standing still -- with phi <= 0 that is a positive
+        # annuity proportional to distance-from-target (measured +0.0167/step
+        # at d/HPWL=1.1; up to ~+0.10/step in a far corner on a short net,
+        # i.e. a completion's worth of free reward per 96-step budget). The
+        # gamma term only buys exact policy-invariance under full PBRS, which
+        # the boundary rule above already forgoes; without the refund the
+        # annuity is pure free income and taught far-wall loitering.
         if not (self.done or self.cur != cur_before):
-            r += rw.beta * (rw.gamma * self._phi() - phi_before)
+            r += rw.beta * (self._phi() - phi_before)
 
         info = {"nets_done": len(self.completed),
                 "nets_total": len(self.board.nets),

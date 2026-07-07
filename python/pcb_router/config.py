@@ -56,7 +56,9 @@ class RewardWeights:
                                      # > lam1 or moving toward the target earns
                                      # net-zero and "don't move" becomes a local
                                      # optimum (see docs/reward-function.md)
-    gamma: float = 0.995             # discount (also used by PPO)
+    # NOTE: shaping is deliberately undiscounted -- beta*(phi' - phi), no gamma
+    # inside (see the annuity note in docs/reward-function.md and env.step).
+    # The RL discount lives in PPOConfig.gamma only.
 
 
 @dataclass

@@ -26,7 +26,7 @@ r_t \;=\;
 \;-\; \underbrace{\lambda_1 \frac{\Delta\ell_t}{\mathrm{HPWL}_n}}_{\text{normalized length}}
 \;-\; \underbrace{\lambda_2 \cdot \mathbb{1}\!\left[a_t = \mathrm{PLACE\_VIA}\right]}_{\text{via usage}}
 \;-\; \underbrace{D \cdot \mathbb{1}\!\left[\text{DRC violation}\right]}_{\text{safety net}}
-\;+\; \underbrace{\beta\left(\gamma\,\Phi(s_{t+1}) - \Phi(s_t)\right)}_{\text{potential shaping}}
+\;+\; \underbrace{\beta\left(\Phi(s_{t+1}) - \Phi(s_t)\right)}_{\text{potential shaping (undiscounted, see note)}}
 $$
 
 with the potential function
@@ -40,6 +40,19 @@ Notes:
 - **Length is normalized per net** by $\mathrm{HPWL}_n$ so that a 5-component
   curriculum board and a 1000-pin BGA produce rewards on the same scale.
   The agent is effectively penalized on its *detour factor*, not raw mm.
+- **The shaping difference is deliberately undiscounted** — $\beta(\Phi(s_{t+1}) - \Phi(s_t))$,
+  *not* the textbook $\beta(\gamma\Phi(s_{t+1}) - \Phi(s_t))$. With the
+  $\gamma$ inside, a stationary agent collects $\beta(1-\gamma)\,|\Phi|$ per
+  step — since $\Phi \le 0$, that is a **positive annuity proportional to
+  distance from the target** (measured $+0.0167$/step at $d/\mathrm{HPWL}=1.1$
+  with $\beta=3$; up to $\sim+0.10$/step in a far corner on a short net —
+  a full net-completion of free reward over one 96-step budget). The trained
+  policy converged to exactly that harvest: climb to the far board edge,
+  loiter along it, then descend to the target late in the budget. The
+  $\gamma$ factor exists only to make full PBRS exactly policy-invariant
+  under discounting, a guarantee the boundary rule below already forgoes —
+  dropping it makes "stand still" worth exactly $0$ and removes the annuity
+  entirely.
 - **Shaping is potential-based *within a net*, and the shaping term is
   omitted entirely on net-boundary transitions** (COMMIT, budget timeout, or
   the engine skipping an unroutable net). $\Phi(s) = -d_{\mathrm{geo}}(s)/\mathrm{HPWL}_n$
@@ -119,7 +132,7 @@ $$
 | $\lambda_4$ | $2.0$ | Per ps of excess skew (tune per stack-up) |
 | $\lambda_5$ | $1.0$ | Solver-metric dependent |
 | $\beta$ | $3.0$ | Shaping weight — **must exceed $\lambda_1$** (see note above); was $1.0$, which made progress reward-neutral and "don't move" a local optimum |
-| $\gamma$ | $0.995$ | Long horizons on large boards |
+| $\gamma$ | $0.995$ | Long horizons on large boards. **GAE/PPO discount only** (`PPOConfig.gamma`) — the shaping term is undiscounted by design (see note above) |
 
 Curriculum stages may anneal $\lambda_{3..5}$ from 0 upward: early training
 optimizes connectivity + length only; physics penalties switch on once the

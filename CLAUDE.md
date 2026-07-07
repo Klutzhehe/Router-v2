@@ -65,8 +65,11 @@ picks an action → `ppo.py`/`train.py` learn from it. All obstacles are discs
    transitions — never reintroduce a boundary payout (a Φ=0 refund at
    timeouts paid the agent for failing far from the target and taught
    wall-hugging; see the boundary note in docs/reward-function.md).
-6. **γ appears twice** — `RewardWeights.gamma` (shaping) and `PPOConfig.gamma`
-   (GAE). Keep them equal.
+6. **γ lives only in `PPOConfig.gamma` (GAE).** The shaping term is
+   *deliberately undiscounted* — `beta * (phi_after - phi_before)`, no γ on
+   phi_after. Putting γ back pays a positive per-step annuity
+   `beta*(1-γ)*d/HPWL` for standing still far from the target and taught
+   far-wall loitering (see the annuity note in docs/reward-function.md).
 7. **Checkpoints are a dict, not a bare state_dict.** `save_checkpoint`/
    `load_checkpoint` in `ppo.py` round-trip `{model, optimizer, stage,
    steps_done, completions, history}`. `load_checkpoint` back-compat-loads a
