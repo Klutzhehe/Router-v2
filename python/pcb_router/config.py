@@ -52,7 +52,7 @@ class RewardWeights:
     lam3: float = 5.0                # impedance mismatch   (physics hook)
     lam4: float = 2.0                # differential skew    (physics hook)
     lam5: float = 1.0                # crosstalk            (physics hook)
-    beta: float = 3.0                # potential-based shaping weight; MUST stay
+    beta: float = 1.5                # potential-based shaping weight; MUST stay
                                      # > lam1 or moving toward the target earns
                                      # net-zero and "don't move" becomes a local
                                      # optimum (see docs/reward-function.md)
