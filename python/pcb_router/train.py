@@ -113,8 +113,12 @@ def main():
         print(f"steps {steps_done:>8}  stage {stage}  "
               f"ep_return {mean_ret:8.2f}  completion {mean_cmp:5.1%}  "
               f"entropy {upd['entropy']:6.3f}  pi {upd['pi_loss']:+.4f}  "
-              f"v {upd['v_loss']:8.3f}  drc {drc_total}  "
+              f"v {upd['v_loss']:8.3f}  clip {upd['clip_frac']:5.1%}  drc {drc_total}  "
               f"commit_rate {stats['commit_rate']:5.1%}  {sps:6.0f} steps/s", flush=True)
+        if upd["clip_frac"] > 0.3:
+            print(f"  ! clip_frac={upd['clip_frac']:.1%} is high -- updates may be too "
+                  f"large/destabilizing. If ep_return/completion crash and stay down "
+                  f"after a run of high clip_frac, that's why.", flush=True)
         if drc_total > 0:
             print(f"  !! DRC={drc_total} this rollout -- geometry-kernel bug, "
                   f"not a hyperparameter issue. See CLAUDE.md invariant #2.", flush=True)

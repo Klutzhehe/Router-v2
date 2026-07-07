@@ -27,7 +27,7 @@ class PPOConfig:
     clip: float = 0.2
     epochs: int = 4
     minibatch: int = 256
-    lr: float = 3e-4
+    lr: float = 1e-4          # was 3e-4 -- see note by the value-clipping code below
     vf_coef: float = 0.5
     ent_coef: float = 0.01
     max_grad_norm: float = 0.5
@@ -107,7 +107,21 @@ class PPO:
                 s1 = ratio * a
                 s2 = torch.clamp(ratio, 1 - cfg.clip, 1 + cfg.clip) * a
                 pi_loss = -torch.min(s1, s2).mean()
-                v_loss = 0.5 * (value - buf.ret[idx].to(dev)).pow(2).mean()
+
+                # PPO2-style value clipping: the policy ratio is clipped, but
+                # nothing bounded how far the critic could move per update --
+                # a single large TD residual (e.g. one lucky net completion in
+                # the batch) could yank the value function, which then feeds
+                # a distorted baseline back into the next rollout's advantages
+                # and destabilizes the policy too (return/entropy/v_loss all
+                # spiking together is exactly that pattern). Clip value moves
+                # the same way ratio moves are clipped, using the pre-update
+                # value estimate already stored in the buffer.
+                old_value = buf.value[idx].to(dev)
+                ret = buf.ret[idx].to(dev)
+                value_clipped = old_value + (value - old_value).clamp(-cfg.clip, cfg.clip)
+                v_loss = 0.5 * torch.max((value - ret).pow(2),
+                                         (value_clipped - ret).pow(2)).mean()
                 loss = pi_loss + cfg.vf_coef * v_loss - cfg.ent_coef * entropy.mean()
 
                 self.opt.zero_grad()
@@ -150,6 +164,12 @@ def load_checkpoint(path, model: DualStreamRouter, ppo: Optional["PPO"] = None,
     model.load_state_dict(ckpt["model"])
     if ppo is not None and ckpt.get("optimizer"):
         ppo.opt.load_state_dict(ckpt["optimizer"])
+        # Adam's state_dict includes each param group's lr as of the save --
+        # loading it silently reverts any PPOConfig.lr change made since then
+        # (e.g. lowering it to fix an unstable run). Keep the momentum/variance
+        # state but re-apply whatever lr the caller's PPO/PPOConfig asked for.
+        for group in ppo.opt.param_groups:
+            group["lr"] = ppo.cfg.lr
     return ckpt
 
 
