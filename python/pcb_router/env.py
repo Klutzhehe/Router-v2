@@ -16,7 +16,7 @@ from . import geometry as geo
 from .board import Board, KIND_PAD, KIND_KEEPOUT
 from .config import (A_COMMIT, A_EXTEND, A_VIA, EnvConfig, HEAD_FEAT_DIM,
                      MAX_LAYERS, N_ANGLE_BINS, N_MAX_PINS, NODE_FEAT_DIM,
-                     P_MAX, POINT_FEAT_DIM)
+                     P_MAX, POINT_FEAT_DIM, DIST_FRACTIONS)
 from .masker import ActionMask, ActionMasker, RoutingHead
 
 _DIRS = geo.unit_dirs(N_ANGLE_BINS)
@@ -113,14 +113,16 @@ class RoutingEnv:
         if a_type == A_EXTEND and self.mask.type_mask[A_EXTEND] \
                 and self.mask.angle_mask[angle_bin]:
             dmax = self.mask.max_distance[angle_bin]
-            dist = rules.min_segment_length + float(np.clip(dist_frac, 0, 1)) \
-                * (dmax - rules.min_segment_length)
+            dist_idx = int(np.clip(dist_frac, 0, len(DIST_FRACTIONS) - 1))
+            dist_val = DIST_FRACTIONS[dist_idx]
+            dist = rules.min_segment_length + dist_val * (dmax - rules.min_segment_length)
             nx = self.head.x + dist * _DIRS[angle_bin, 0]
             ny = self.head.y + dist * _DIRS[angle_bin, 1]
             self.board.add_trace(self.head.x, self.head.y, nx, ny,
                                  self.head.half_width, self.head.layer,
                                  self.head.net_id)
             self.head.x, self.head.y = nx, ny
+            self.head.just_placed_via = False
             r -= rw.lam1 * dist / hpwl
 
         elif a_type == A_VIA and self.mask.type_mask[A_VIA] \
@@ -128,6 +130,7 @@ class RoutingEnv:
             lo, hi = min(self.head.layer, layer), max(self.head.layer, layer)
             self.board.add_via(self.head.x, self.head.y, lo, hi, self.head.net_id)
             self.head.layer = int(layer)
+            self.head.just_placed_via = True
             r -= rw.lam2
 
         elif a_type == A_COMMIT and self.mask.type_mask[A_COMMIT]:

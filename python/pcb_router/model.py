@@ -9,8 +9,7 @@ Fusion         : concat -> MLP trunk -> masked hybrid actor + scalar critic.
 Action tuple (contract shared with masker.py / config.py):
     action_type : Categorical over {EXTEND, PLACE_VIA, COMMIT_NET}
     angle_bin   : Categorical over N_ANGLE_BINS directions (masked)
-    dist_frac   : Beta-distributed fraction of the per-bin max legal distance
-                  -> every sampled EXTEND is legal by construction
+    dist_frac   : Categorical over N_DIST_BINS distance steps (fractions)
     layer       : Categorical over MAX_LAYERS via targets (masked)
 """
 
@@ -20,11 +19,11 @@ from typing import Dict, NamedTuple, Tuple
 
 import torch
 import torch.nn as nn
-from torch.distributions import Beta, Categorical
+from torch.distributions import Categorical
 
 from .config import (A_EXTEND, A_VIA, HEAD_FEAT_DIM, MAX_LAYERS,
                      N_ACTION_TYPES, N_ANGLE_BINS, NODE_FEAT_DIM,
-                     POINT_FEAT_DIM)
+                     POINT_FEAT_DIM, N_DIST_BINS)
 
 MASK_FILL = -1e9
 
@@ -32,7 +31,7 @@ MASK_FILL = -1e9
 class RouterAction(NamedTuple):
     action_type: torch.Tensor   # (B,) long
     angle_bin: torch.Tensor     # (B,) long
-    dist_frac: torch.Tensor     # (B,) float in (0, 1)
+    dist_frac: torch.Tensor     # (B,) long (bin index)
     layer: torch.Tensor         # (B,) long
 
 
@@ -85,8 +84,8 @@ class BoardPointNet(nn.Module):
         return pooled * has_pts
 
 
-class DualStreamRouter(nn.Module):
-    def __init__(self, hidden: int = 128, trunk_hidden: int = 256):
+class ActorRouter(nn.Module):
+    def __init__(self, hidden: int = 256, trunk_hidden: int = 512):
         super().__init__()
         self.gnn = DenseGNN(NODE_FEAT_DIM, hidden)
         self.pointnet = BoardPointNet(POINT_FEAT_DIM, hidden)
@@ -100,15 +99,9 @@ class DualStreamRouter(nn.Module):
 
         self.type_head = nn.Linear(trunk_hidden, N_ACTION_TYPES)
         self.angle_head = nn.Linear(trunk_hidden, N_ANGLE_BINS)
-        self.dist_head = nn.Linear(trunk_hidden, 2)             # Beta alpha, beta
+        self.dist_head = nn.Linear(trunk_hidden, N_DIST_BINS)
         self.layer_head = nn.Linear(trunk_hidden, MAX_LAYERS)
 
-        self.critic = nn.Sequential(
-            nn.Linear(trunk_hidden, trunk_hidden), nn.ReLU(),
-            nn.Linear(trunk_hidden, 1),
-        )
-
-    # ------------------------------------------------------------------ fuse
     def _fuse(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
         node_h = self.gnn(obs["node_feats"], obs["adj"], obs["node_mask"])
         nm = obs["node_mask"].unsqueeze(-1)
@@ -120,27 +113,17 @@ class DualStreamRouter(nn.Module):
         return self.trunk(torch.cat([graph_h, net_h, board_h, head_h], -1))
 
     def _dists(self, z: torch.Tensor, masks: Dict[str, torch.Tensor]):
-        """Apply the environment's binary action mask before sampling."""
         t_mask = _safe_mask(masks["type"])
         a_mask = _safe_mask(masks["angle"])
         l_mask = _safe_mask(masks["layer"])
-        ab = 1.0 + nn.functional.softplus(self.dist_head(z))    # alpha,beta >= 1
-        ab = torch.clamp(ab, max=20.0)                          # stabilize Beta policy against gradient explosion
         return {
             "type": Categorical(logits=self.type_head(z) + (1 - t_mask) * MASK_FILL),
             "angle": Categorical(logits=self.angle_head(z) + (1 - a_mask) * MASK_FILL),
-            "dist": Beta(ab[..., 0], ab[..., 1]),
+            "dist": Categorical(logits=self.dist_head(z)),
             "layer": Categorical(logits=self.layer_head(z) + (1 - l_mask) * MASK_FILL),
         }
 
-    @staticmethod
-    def _joint_logp(d, a: RouterAction) -> torch.Tensor:
-        """Log-prob of the hybrid action, conditional on the action type.
-
-        Sub-actions the env ignores for this type (angle/dist for VIA and
-        COMMIT, layer for EXTEND and COMMIT) are excluded: counting them
-        credits whatever noise happened to be sampled alongside e.g. a +10
-        COMMIT to heads that had no causal effect on the reward."""
+    def _joint_logp(self, d, a: RouterAction) -> torch.Tensor:
         is_extend = (a.action_type == A_EXTEND).float()
         is_via = (a.action_type == A_VIA).float()
         return (d["type"].log_prob(a.action_type)
@@ -148,39 +131,84 @@ class DualStreamRouter(nn.Module):
                                + d["dist"].log_prob(a.dist_frac))
                 + is_via * d["layer"].log_prob(a.layer))
 
-    # ------------------------------------------------------------------- API
-    @torch.no_grad()
-    def act(self, obs, masks,
-            deterministic: bool = False) -> Tuple[RouterAction, torch.Tensor, torch.Tensor]:
-        """Sample an action (or take the mode, for evaluation/demos).
-        Returns (action, joint_log_prob, value)."""
+    def act(self, obs, masks, deterministic: bool = False) -> Tuple[RouterAction, torch.Tensor]:
         z = self._fuse(obs)
         d = self._dists(z, masks)
         if deterministic:
             a = RouterAction(
                 action_type=d["type"].probs.argmax(-1),
                 angle_bin=d["angle"].probs.argmax(-1),
-                dist_frac=d["dist"].mean.clamp(1e-4, 1 - 1e-4),
+                dist_frac=d["dist"].probs.argmax(-1),
                 layer=d["layer"].probs.argmax(-1),
             )
         else:
             a = RouterAction(
                 action_type=d["type"].sample(),
                 angle_bin=d["angle"].sample(),
-                dist_frac=d["dist"].sample().clamp(1e-4, 1 - 1e-4),
+                dist_frac=d["dist"].sample(),
                 layer=d["layer"].sample(),
             )
-        return a, self._joint_logp(d, a), self.critic(z).squeeze(-1)
+        return a, self._joint_logp(d, a)
 
     def evaluate_actions(self, obs, masks, action: RouterAction):
-        """Log-prob / entropy / value for PPO's surrogate loss."""
         z = self._fuse(obs)
         d = self._dists(z, masks)
-        # Entropy of the hierarchical policy: each sub-head counts in
-        # proportion to how often its branch is actually taken (mirrors the
-        # conditional log-prob in _joint_logp).
         p = d["type"].probs
         entropy = (d["type"].entropy()
                    + p[..., A_EXTEND] * (d["angle"].entropy() + d["dist"].entropy())
                    + p[..., A_VIA] * d["layer"].entropy())
-        return self._joint_logp(d, action), entropy, self.critic(z).squeeze(-1)
+        return self._joint_logp(d, action), entropy
+
+
+class CriticRouter(nn.Module):
+    def __init__(self, hidden: int = 256, trunk_hidden: int = 512):
+        super().__init__()
+        self.gnn = DenseGNN(NODE_FEAT_DIM, hidden)
+        self.pointnet = BoardPointNet(POINT_FEAT_DIM, hidden)
+        self.head_proj = nn.Linear(HEAD_FEAT_DIM, hidden)
+
+        # Fusion: [graph_global | current_net_embed | board_global | head]
+        self.trunk = nn.Sequential(
+            nn.Linear(4 * hidden, trunk_hidden), nn.ReLU(),
+            nn.Linear(trunk_hidden, trunk_hidden), nn.ReLU(),
+        )
+
+        self.critic = nn.Sequential(
+            nn.Linear(trunk_hidden, trunk_hidden), nn.ReLU(),
+            nn.Linear(trunk_hidden, 1),
+        )
+
+    def _fuse(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        node_h = self.gnn(obs["node_feats"], obs["adj"], obs["node_mask"])
+        nm = obs["node_mask"].unsqueeze(-1)
+        graph_h = (node_h * nm).sum(1) / nm.sum(1).clamp(min=1.0)
+        cm = obs["cur_net_mask"].unsqueeze(-1)
+        net_h = (node_h * cm).sum(1) / cm.sum(1).clamp(min=1.0)
+        board_h = self.pointnet(obs["points"], obs["point_mask"])
+        head_h = torch.relu(self.head_proj(obs["head_state"]))
+        return self.trunk(torch.cat([graph_h, net_h, board_h, head_h], -1))
+
+    def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        z = self._fuse(obs)
+        return self.critic(z).squeeze(-1)
+
+
+class DualStreamRouter(nn.Module):
+    def __init__(self, hidden: int = 256, trunk_hidden: int = 512):
+        super().__init__()
+        self.actor = ActorRouter(hidden, trunk_hidden)
+        self.critic = CriticRouter(hidden, trunk_hidden)
+
+    def act(self, obs, masks,
+            deterministic: bool = False) -> Tuple[RouterAction, torch.Tensor, torch.Tensor]:
+        """Sample an action (or take the mode, for evaluation/demos).
+        Returns (action, joint_log_prob, value)."""
+        a, logp = self.actor.act(obs, masks, deterministic)
+        val = self.critic(obs)
+        return a, logp, val
+
+    def evaluate_actions(self, obs, masks, action: RouterAction):
+        """Log-prob / entropy / value for PPO's surrogate loss."""
+        logp, entropy = self.actor.evaluate_actions(obs, masks, action)
+        val = self.critic(obs)
+        return logp, entropy, val

@@ -46,10 +46,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", type=int, default=0)
     ap.add_argument("--total-steps", type=int, default=200_000)
-    ap.add_argument("--rollout", type=int, default=2048,
+    ap.add_argument("--rollout", type=int, default=8192,
                     help="total env-steps collected per PPO update "
                          "(split across --n-envs when > 1)")
-    ap.add_argument("--n-envs", type=int, default=1,
+    ap.add_argument("--n-envs", type=int, default=16,
                     help="parallel boards per step; >1 batches model.act "
                          "for GPU throughput (try 16-32 on a Colab GPU)")
     ap.add_argument("--device", default="auto")
@@ -96,11 +96,11 @@ def main():
         t0 = time.time()
         if args.n_envs > 1:
             buf, stats, carried = collect_rollout_vec(env, model, steps_per_env,
-                                                       device, *carried)
+                                                       device, *carried, ppo.cfg)
             steps_this_update = steps_per_env * args.n_envs
         else:
             buf, stats, carried = collect_rollout(env, model, args.rollout, device,
-                                                  *carried)
+                                                  *carried, ppo.cfg)
             steps_this_update = args.rollout
         upd = ppo.update(buf)
         steps_done += steps_this_update

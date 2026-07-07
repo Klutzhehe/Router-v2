@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 N_ACTION_TYPES = 3
 A_EXTEND, A_VIA, A_COMMIT = 0, 1, 2
 N_ANGLE_BINS = 64                    # 5.625 degrees per bin
+N_DIST_BINS = 5                      # 5 discrete distance steps
+DIST_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1.0] # fractions of max distance
 MAX_LAYERS = 12
 
 # ---- Fixed observation dims (padded for trivial batching) -------------------

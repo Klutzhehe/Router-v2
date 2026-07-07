@@ -36,6 +36,7 @@ class RoutingHead:
     target_x: float
     target_y: float
     target_pad: int
+    just_placed_via: bool = False
 
 
 @dataclass
@@ -159,7 +160,7 @@ class ActionMasker:
 
         type_mask = np.zeros(N_ACTION_TYPES, dtype=np.uint8)
         type_mask[A_EXTEND] = 1 if angle_mask.any() else 0
-        type_mask[A_VIA] = 1 if layer_mask.any() else 0
+        type_mask[A_VIA] = 1 if (layer_mask.any() and not head.just_placed_via) else 0
         type_mask[A_COMMIT] = 1 if commit_ok else 0
 
         return ActionMask(type_mask=type_mask, angle_mask=angle_mask,

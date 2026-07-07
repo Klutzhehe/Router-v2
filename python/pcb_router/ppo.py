@@ -26,7 +26,7 @@ class PPOConfig:
     gae_lambda: float = 0.95
     clip: float = 0.2
     epochs: int = 2
-    minibatch: int = 256
+    minibatch: int = 512
     lr: float = 5e-5          # lowered from 1e-4 for gentler PPO updates
     vf_coef: float = 0.5
     vf_clip: float = 10.0     # value-clip range in RETURN units (~ one net
@@ -46,7 +46,7 @@ class RolloutBuffer:
                       "layer": torch.zeros((T, 12))}
         self.a_type = torch.zeros(T, dtype=torch.long)
         self.a_angle = torch.zeros(T, dtype=torch.long)
-        self.a_dist = torch.zeros(T)
+        self.a_dist = torch.zeros(T, dtype=torch.long)
         self.a_layer = torch.zeros(T, dtype=torch.long)
         self.logp = torch.zeros(T)
         self.value = torch.zeros(T)
@@ -187,7 +187,7 @@ def load_checkpoint(path, model: DualStreamRouter, ppo: Optional["PPO"] = None,
 
 
 def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
-                    obs=None, masks=None):
+                    obs=None, masks=None, cfg: Optional[PPOConfig] = None):
     """Roll the policy for T steps (auto-resetting). Returns the filled
     buffer, episode stats, and the carried-over (obs, masks)."""
     if obs is None:
@@ -232,7 +232,9 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
         _, _, last_v = model.act(to_torch(obs, device),
                                  {k: torch.from_numpy(v).unsqueeze(0).to(device)
                                   for k, v in masks.items()})
-    buf.compute_gae(float(last_v.item()), PPOConfig())
+    if cfg is None:
+        cfg = PPOConfig()
+    buf.compute_gae(float(last_v.item()), cfg)
     stats = {
         "returns": ep_returns, "completions": ep_completions, "drc": ep_drc,
         # When COMMIT is legal (head within snap distance of target), how
@@ -269,7 +271,7 @@ class VecRolloutBuffer:
                       "layer": torch.zeros((S, N, 12))}
         self._a_type = torch.zeros((S, N), dtype=torch.long)
         self._a_angle = torch.zeros((S, N), dtype=torch.long)
-        self._a_dist = torch.zeros((S, N))
+        self._a_dist = torch.zeros((S, N), dtype=torch.long)
         self._a_layer = torch.zeros((S, N), dtype=torch.long)
         self._logp = torch.zeros((S, N))
         self._value = torch.zeros((S, N))
@@ -321,7 +323,7 @@ class VecRolloutBuffer:
 
 
 def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
-                        device: str, obs=None, masks=None):
+                        device: str, obs=None, masks=None, cfg: Optional[PPOConfig] = None):
     """Vectorized counterpart to collect_rollout: steps N envs together each
     iteration so model.act processes a batch of N instead of 1. Same return
     shape as collect_rollout (buffer, stats, carried (obs, masks))."""
@@ -371,7 +373,9 @@ def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
         t_obs = {k: torch.from_numpy(v).to(device) for k, v in obs.items()}
         t_masks = {k: torch.from_numpy(v).to(device) for k, v in masks.items()}
         _, _, last_v = model.act(t_obs, t_masks)
-    buf.finalize(last_v.cpu(), PPOConfig())
+    if cfg is None:
+        cfg = PPOConfig()
+    buf.finalize(last_v.cpu(), cfg)
     stats = {
         "returns": ep_returns, "completions": ep_completions, "drc": ep_drc,
         "commit_rate": (commit_taken_steps / commit_legal_steps
