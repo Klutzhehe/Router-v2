@@ -25,29 +25,30 @@ class TrainingMonitor:
     def __init__(self, advance_at: float = 0.95):
         self.history: List[Dict] = []
         self.advance_at = advance_at
-        self.fig, self.axes = plt.subplots(1, 3, figsize=(15, 4))
 
     def update(self, record: Dict):
         self.history.append(record)
         steps = [h["steps_done"] for h in self.history]
         stages = np.array([h["stage"] for h in self.history])
 
-        clear_output(wait=True)
-        for ax in self.axes:
-            ax.clear()
+        # Colab's inline backend auto-closes the figure after each display
+        # (InlineBackend.close_figures=True), so reusing one fig/axes across
+        # calls silently stops rendering after the first epoch. Build a
+        # fresh figure every time instead, same as show_board_inline below.
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-        ax = self.axes[0]
+        ax = axes[0]
         ax.plot(steps, [h["completion"] for h in self.history], color="tab:blue")
         ax.axhline(self.advance_at, color="gray", ls="--", lw=1,
                   label=f"advance @ {self.advance_at:.0%}")
         ax.set_title("net completion rate (rolling 20 ep)")
         ax.set_xlabel("env steps"); ax.set_ylim(-0.02, 1.02); ax.legend(fontsize=8)
 
-        ax = self.axes[1]
+        ax = axes[1]
         ax.plot(steps, [h["ep_return"] for h in self.history], color="tab:orange")
         ax.set_title("mean episode return"); ax.set_xlabel("env steps")
 
-        ax = self.axes[2]
+        ax = axes[2]
         ax.plot(steps, [h["entropy"] for h in self.history], color="tab:green",
                label="entropy")
         ax.set_ylabel("entropy"); ax.set_xlabel("env steps")
@@ -60,15 +61,18 @@ class TrainingMonitor:
         # Mark curriculum stage transitions on all three panels.
         change_idx = np.nonzero(np.diff(stages))[0]
         for i in change_idx:
-            for a in self.axes:
+            for a in axes:
                 a.axvline(steps[i + 1], color="k", ls=":", lw=1)
 
-        self.fig.suptitle(
+        fig.suptitle(
             f"steps {steps[-1]:,}  |  stage {stages[-1]}  |  "
             f"completion {self.history[-1]['completion']:.1%}  |  "
             f"return {self.history[-1]['ep_return']:.1f}")
-        self.fig.tight_layout()
+        fig.tight_layout()
+
+        clear_output(wait=True)
         plt.show()
+        plt.close(fig)
 
 
 def show_board_inline(board: Board, title: str = "", completed=None, figsize=(6, 6)):
