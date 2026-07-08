@@ -318,6 +318,8 @@ class VecRolloutBuffer:
         self.a_layer = self._a_layer.reshape(self.T)
         self.logp = self._logp.reshape(self.T)
         self.value = self._value.reshape(self.T)
+        self.reward = self._reward.reshape(self.T)
+        self.done = self._done.reshape(self.T)
         self.adv = adv.reshape(self.T)
         self.ret = ret.reshape(self.T)
 
