@@ -58,6 +58,7 @@ class RoutingEnv:
                             key=lambda i: self.board.nets[i].hpwl)
         self.cur = 0
         self.completed: list[int] = []
+        self.last_completion = None
         self.drc_count = 0
         self.ep_steps = 0
         self.done = False

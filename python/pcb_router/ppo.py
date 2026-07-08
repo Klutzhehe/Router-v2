@@ -237,7 +237,7 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
     buf.compute_gae(float(last_v.item()), cfg)
     stats = {
         "returns": ep_returns,
-        "completions": [env.last_completion] if env.last_completion is not None else [],
+        "completions": ep_completions,
         "drc": ep_drc,
         # When COMMIT is legal (head within snap distance of target), how
         # often does the policy actually take it vs. keep extending past it?
@@ -382,7 +382,7 @@ def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
     buf.finalize(last_v.cpu(), cfg)
     stats = {
         "returns": ep_returns,
-        "completions": [e.last_completion for e in vec_env.envs if e.last_completion is not None],
+        "completions": ep_completions,
         "drc": ep_drc,
         "commit_rate": (commit_taken_steps / commit_legal_steps
                         if commit_legal_steps else float("nan")),
