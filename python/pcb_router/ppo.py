@@ -196,39 +196,39 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
     ep_returns, ep_completions, ep_drc, ep_ret = [], [], [], 0.0
     commit_legal_steps = commit_taken_steps = 0
 
-    for _ in range(T):
-        t_obs = to_torch(obs, device)
-        t_masks = {k: torch.from_numpy(v).unsqueeze(0).to(device)
-                   for k, v in masks.items()}
-        action, logp, value = model.act(t_obs, t_masks)
-        a = (int(action.action_type), int(action.angle_bin),
-             float(action.dist_frac), int(action.layer))
-        if masks["type"][2]:                      # A_COMMIT legal this step
-            commit_legal_steps += 1
-            if a[0] == 2:
-                commit_taken_steps += 1
-        next_obs, next_masks, reward, done, info = env.step(a)
-        # Debug printing for the first few steps of the epoch (e.g. first 20 steps)
-        if _ < 20 and env.head is not None:
-            types = ["EXTEND", "VIA", "COMMIT"]
-            print(f"  [DEBUG STEP {_}] Head: ({env.head.x:.2f}, {env.head.y:.2f}, L{env.head.layer}) "
-                  f"Target: ({env.head.target_x:.2f}, {env.head.target_y:.2f}) "
-                  f"Budget: {env.budget} | "
-                  f"Action: {types[a[0]]} (angle bin {a[1]}, dist_frac {a[2]:.3f}, layer {a[3]}) | "
-                  f"Reward: {reward:+.4f} | Masks: type={masks['type']}, "
-                  f"angle_sum={masks['angle'].sum()}, layer_sum={masks['layer'].sum()}", flush=True)
-        squeezed = RouterAction(*(x.squeeze(0) for x in action))
-        buf.add(obs, masks, squeezed, logp.item(), value.item(), reward, done)
-        ep_ret += reward
-        if done:
-            ep_returns.append(ep_ret)
-            ep_completions.append(info["nets_done"] / info["nets_total"])
-            ep_drc.append(info["drc"])
-            ep_ret = 0.0
-            next_obs, next_masks = env.reset()
-        obs, masks = next_obs, next_masks
-
     with torch.no_grad():
+        for _ in range(T):
+            t_obs = to_torch(obs, device)
+            t_masks = {k: torch.from_numpy(v).unsqueeze(0).to(device)
+                       for k, v in masks.items()}
+            action, logp, value = model.act(t_obs, t_masks)
+            a = (int(action.action_type), int(action.angle_bin),
+                 float(action.dist_frac), int(action.layer))
+            if masks["type"][2]:                      # A_COMMIT legal this step
+                commit_legal_steps += 1
+                if a[0] == 2:
+                    commit_taken_steps += 1
+            next_obs, next_masks, reward, done, info = env.step(a)
+            # Debug printing for the first few steps of the epoch (e.g. first 20 steps)
+            if _ < 20 and env.head is not None:
+                types = ["EXTEND", "VIA", "COMMIT"]
+                print(f"  [DEBUG STEP {_}] Head: ({env.head.x:.2f}, {env.head.y:.2f}, L{env.head.layer}) "
+                      f"Target: ({env.head.target_x:.2f}, {env.head.target_y:.2f}) "
+                      f"Budget: {env.budget} | "
+                      f"Action: {types[a[0]]} (angle bin {a[1]}, dist_frac {a[2]:.3f}, layer {a[3]}) | "
+                      f"Reward: {reward:+.4f} | Masks: type={masks['type']}, "
+                      f"angle_sum={masks['angle'].sum()}, layer_sum={masks['layer'].sum()}", flush=True)
+            squeezed = RouterAction(*(x.squeeze(0) for x in action))
+            buf.add(obs, masks, squeezed, logp.item(), value.item(), reward, done)
+            ep_ret += reward
+            if done:
+                ep_returns.append(ep_ret)
+                ep_completions.append(info["nets_done"] / info["nets_total"])
+                ep_drc.append(info["drc"])
+                ep_ret = 0.0
+                next_obs, next_masks = env.reset()
+            obs, masks = next_obs, next_masks
+
         _, _, last_v = model.act(to_torch(obs, device),
                                  {k: torch.from_numpy(v).unsqueeze(0).to(device)
                                   for k, v in masks.items()})
@@ -337,41 +337,41 @@ def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
     ep_ret = np.zeros(n, dtype=np.float32)
     commit_legal_steps = commit_taken_steps = 0
 
-    for _ in range(steps_per_env):
-        t_obs = {k: torch.from_numpy(v).to(device) for k, v in obs.items()}
-        t_masks = {k: torch.from_numpy(v).to(device) for k, v in masks.items()}
-        action, logp, value = model.act(t_obs, t_masks)
-
-        legal_commit = masks["type"][:, 2].astype(bool)
-        commit_legal_steps += int(legal_commit.sum())
-        taken_type = action.action_type.cpu().numpy()
-        commit_taken_steps += int(((taken_type == 2) & legal_commit).sum())
-
-        actions = [(int(action.action_type[i]), int(action.angle_bin[i]),
-                   float(action.dist_frac[i]), int(action.layer[i])) for i in range(n)]
-        next_obs, next_masks, rewards, dones, infos = vec_env.step(actions)
-        # Debug printing for the first environment (env 0) for the first 20 steps
-        if _ < 20 and vec_env.envs[0].head is not None:
-            types = ["EXTEND", "VIA", "COMMIT"]
-            env0 = vec_env.envs[0]
-            print(f"  [DEBUG ENV0 STEP {_}] Head: ({env0.head.x:.2f}, {env0.head.y:.2f}, L{env0.head.layer}) "
-                  f"Target: ({env0.head.target_x:.2f}, {env0.head.target_y:.2f}) "
-                  f"Budget: {env0.budget} | "
-                  f"Action: {types[actions[0][0]]} (angle bin {actions[0][1]}, dist_frac {actions[0][2]:.3f}, layer {actions[0][3]}) | "
-                  f"Reward: {rewards[0]:+.4f} | Masks: type={masks['type'][0]}, "
-                  f"angle_sum={masks['angle'][0].sum()}, layer_sum={masks['layer'][0].sum()}", flush=True)
-
-        buf.add(obs, masks, action, logp, value, rewards, dones)
-        ep_ret += rewards
-        for i in range(n):
-            if dones[i]:
-                ep_returns.append(float(ep_ret[i]))
-                ep_completions.append(infos[i]["nets_done"] / infos[i]["nets_total"])
-                ep_drc.append(infos[i]["drc"])
-                ep_ret[i] = 0.0
-        obs, masks = next_obs, next_masks
-
     with torch.no_grad():
+        for _ in range(steps_per_env):
+            t_obs = {k: torch.from_numpy(v).to(device) for k, v in obs.items()}
+            t_masks = {k: torch.from_numpy(v).to(device) for k, v in masks.items()}
+            action, logp, value = model.act(t_obs, t_masks)
+
+            legal_commit = masks["type"][:, 2].astype(bool)
+            commit_legal_steps += int(legal_commit.sum())
+            taken_type = action.action_type.cpu().numpy()
+            commit_taken_steps += int(((taken_type == 2) & legal_commit).sum())
+
+            actions = [(int(action.action_type[i]), int(action.angle_bin[i]),
+                       float(action.dist_frac[i]), int(action.layer[i])) for i in range(n)]
+            next_obs, next_masks, rewards, dones, infos = vec_env.step(actions)
+            # Debug printing for the first environment (env 0) for the first 20 steps
+            if _ < 20 and vec_env.envs[0].head is not None:
+                types = ["EXTEND", "VIA", "COMMIT"]
+                env0 = vec_env.envs[0]
+                print(f"  [DEBUG ENV0 STEP {_}] Head: ({env0.head.x:.2f}, {env0.head.y:.2f}, L{env0.head.layer}) "
+                      f"Target: ({env0.head.target_x:.2f}, {env0.head.target_y:.2f}) "
+                      f"Budget: {env0.budget} | "
+                      f"Action: {types[actions[0][0]]} (angle bin {actions[0][1]}, dist_frac {actions[0][2]:.3f}, layer {actions[0][3]}) | "
+                      f"Reward: {rewards[0]:+.4f} | Masks: type={masks['type'][0]}, "
+                      f"angle_sum={masks['angle'][0].sum()}, layer_sum={masks['layer'][0].sum()}", flush=True)
+
+            buf.add(obs, masks, action, logp, value, rewards, dones)
+            ep_ret += rewards
+            for i in range(n):
+                if dones[i]:
+                    ep_returns.append(float(ep_ret[i]))
+                    ep_completions.append(infos[i]["nets_done"] / infos[i]["nets_total"])
+                    ep_drc.append(infos[i]["drc"])
+                    ep_ret[i] = 0.0
+            obs, masks = next_obs, next_masks
+
         t_obs = {k: torch.from_numpy(v).to(device) for k, v in obs.items()}
         t_masks = {k: torch.from_numpy(v).to(device) for k, v in masks.items()}
         _, _, last_v = model.act(t_obs, t_masks)
