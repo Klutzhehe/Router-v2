@@ -33,6 +33,8 @@ class PPOConfig:
                               # completion C); NOT the 0.2 policy-ratio clip --
                               # see the note by the value-clipping code below
     ent_coef: float = 0.02    # raised from 0.01 to encourage exploration and prevent collapse
+    ent_coef_min: float = 0.003  # minimum entropy coefficient (annealed to this)
+    ent_anneal_steps: int = 500000  # steps over which to anneal entropy
     max_grad_norm: float = 0.5
 
 
@@ -88,9 +90,16 @@ class PPO:
         self.device = device
         self.opt = torch.optim.Adam(model.parameters(), lr=self.cfg.lr)
 
-    def update(self, buf: RolloutBuffer) -> Dict[str, float]:
+    def get_ent_coef(self, steps_done: int) -> float:
+        """Anneal entropy coefficient over time to sharpen policy decisions."""
+        cfg = self.cfg
+        progress = min(steps_done / cfg.ent_anneal_steps, 1.0)
+        return cfg.ent_coef * (1.0 - progress) + cfg.ent_coef_min * progress
+
+    def update(self, buf: RolloutBuffer, steps_done: int = 0) -> Dict[str, float]:
         cfg, dev = self.cfg, self.device
         T = buf.T
+        ent_coef = self.get_ent_coef(steps_done)
 
         # Print epoch-level debugging statistics
         type_fracs = [float((buf.a_type == i).float().mean()) for i in range(3)]
@@ -98,7 +107,8 @@ class PPO:
               f"Action type fracs: EXTEND={type_fracs[0]:.2%}, VIA={type_fracs[1]:.2%}, COMMIT={type_fracs[2]:.2%} | "
               f"Mean Reward: {float(buf.reward.mean()):.4f} | "
               f"Advantage Mean: {float(buf.adv.mean()):.4f}, Std: {float(buf.adv.std()):.4f} | "
-              f"Value Mean: {float(buf.value.mean()):.4f}, Std: {float(buf.value.std()):.4f}", flush=True)
+              f"Value Mean: {float(buf.value.mean()):.4f}, Std: {float(buf.value.std()):.4f} | "
+              f"ent_coef: {ent_coef:.4f}", flush=True)
 
         adv = (buf.adv - buf.adv.mean()) / (buf.adv.std() + 1e-8)
         stats = {"pi_loss": 0.0, "v_loss": 0.0, "entropy": 0.0, "clip_frac": 0.0}
@@ -135,7 +145,7 @@ class PPO:
                 value_clipped = old_value + (value - old_value).clamp(-cfg.vf_clip, cfg.vf_clip)
                 v_loss = 0.5 * torch.max((value - ret).pow(2),
                                          (value_clipped - ret).pow(2)).mean()
-                loss = pi_loss + cfg.vf_coef * v_loss - cfg.ent_coef * entropy.mean()
+                loss = pi_loss + cfg.vf_coef * v_loss - ent_coef * entropy.mean()
 
                 self.opt.zero_grad()
                 loss.backward()

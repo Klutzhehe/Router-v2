@@ -102,7 +102,7 @@ def main():
             buf, stats, carried = collect_rollout(env, model, args.rollout, device,
                                                   *carried, ppo.cfg)
             steps_this_update = args.rollout
-        upd = ppo.update(buf)
+        upd = ppo.update(buf, steps_done)
         steps_done += steps_this_update
         completions.extend(stats["completions"])
 

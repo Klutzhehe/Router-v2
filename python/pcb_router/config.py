@@ -22,7 +22,7 @@ N_MAX_PINS = 64                      # max pads per board (netlist graph nodes)
 P_MAX = 256                          # max points in the egocentric cloud
 NODE_FEAT_DIM = 8
 POINT_FEAT_DIM = 10
-HEAD_FEAT_DIM = 19
+HEAD_FEAT_DIM = 21                   # position(2) + target_offset(2) + distance(1) + layer_onehot(12) + completion(1) + budget(1) + prev_heading_cos_sin(2) = 21
 
 
 @dataclass
@@ -54,6 +54,7 @@ class RewardWeights:
     lam3: float = 5.0                # impedance mismatch   (physics hook)
     lam4: float = 2.0                # differential skew    (physics hook)
     lam5: float = 1.0                # crosstalk            (physics hook)
+    lam_turn: float = 0.3            # turn-angle penalty (radians normalized)
     beta: float = 1.5                # potential-based shaping weight; MUST stay
                                      # > lam1 or moving toward the target earns
                                      # net-zero and "don't move" becomes a local

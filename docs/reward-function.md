@@ -10,6 +10,7 @@ the Python training loop must both read from this spec.
 |---|---|
 | $s_t, a_t$ | State and action at step $t$ |
 | $\Delta\ell_t$ | Copper length (mm) added by action $a_t$ |
+| $\Delta\theta_t$ | Turn angle (radians) from previous segment heading to current segment heading |
 | $\mathrm{HPWL}_n$ | Half-perimeter wirelength lower bound of net $n$ (scale normalizer) |
 | $N, N_c$ | Total nets / nets completed at episode end |
 | $Z_i, Z_i^*$ | Achieved / required impedance of high-speed net $i$ (from 2.5D solver) |
@@ -25,6 +26,7 @@ r_t \;=\;
 \underbrace{C \cdot \mathbb{1}\!\left[\text{net } n \text{ completed at } t\right]}_{\text{net completion}}
 \;-\; \underbrace{\lambda_1 \frac{\Delta\ell_t}{\mathrm{HPWL}_n}}_{\text{normalized length}}
 \;-\; \underbrace{\lambda_2 \cdot \mathbb{1}\!\left[a_t = \mathrm{PLACE\_VIA}\right]}_{\text{via usage}}
+\;-\; \underbrace{\lambda_{\text{turn}} \frac{|\Delta\theta_t|}{\pi}}_{\text{turn penalty}}
 \;-\; \underbrace{D \cdot \mathbb{1}\!\left[\text{DRC violation}\right]}_{\text{safety net}}
 \;+\; \underbrace{\beta\left(\Phi(s_{t+1}) - \Phi(s_t)\right)}_{\text{potential shaping (undiscounted, see note)}}
 $$
@@ -128,10 +130,11 @@ $$
 | $D$ | $-50$ | Should never fire (see above) |
 | $\lambda_1$ | $1.0$ | Detour factor of 2 costs 1/10 of a net completion |
 | $\lambda_2$ | $0.5$ | Via ≈ 0.5 detour-units |
+| $\lambda_{\text{turn}}$ | $0.3$ | 180° turn costs 0.03 reward; pushes policy toward smoother routes without inducing "straight-line" gridding |
 | $\lambda_3$ | $5.0$ | Per unit of relative impedance error |
 | $\lambda_4$ | $2.0$ | Per ps of excess skew (tune per stack-up) |
 | $\lambda_5$ | $1.0$ | Solver-metric dependent |
-| $\beta$ | $3.0$ | Shaping weight — **must exceed $\lambda_1$** (see note above); was $1.0$, which made progress reward-neutral and "don't move" a local optimum |
+| $\beta$ | $1.5$ | Shaping weight — **must exceed $\lambda_1$** (see note above); was $3.0$, lowered to tighten steering cone and reduce wander |
 | $\gamma$ | $0.995$ | Long horizons on large boards. **GAE/PPO discount only** (`PPOConfig.gamma`) — the shaping term is undiscounted by design (see note above) |
 
 Curriculum stages may anneal $\lambda_{3..5}$ from 0 upward: early training

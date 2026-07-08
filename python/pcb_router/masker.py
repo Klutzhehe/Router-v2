@@ -37,6 +37,7 @@ class RoutingHead:
     target_y: float
     target_pad: int
     just_placed_via: bool = False
+    prev_heading_angle: float = 0.0  # radians; used to compute turn penalty
 
 
 @dataclass
