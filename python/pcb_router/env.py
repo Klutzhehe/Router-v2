@@ -298,7 +298,7 @@ class RoutingEnv:
         for z in range(num_layers):
             if z != z_start:
                 if self.masker.via_fits(p0, min(z_start, z), max(z_start, z), net_id):
-                    dp[(0, z)] = (1, 0.0, (0, z_start))
+                    dp[(0, z)] = (1, 0.0, (0, z_start, True))
                     
         N = len(path)
         for j in range(1, N):
@@ -315,22 +315,29 @@ class RoutingEnv:
                         if (i, zi) not in dp:
                             continue
                             
-                        if not self.masker.segment_legal(pi, pj, zj, net_id, hw):
-                            continue
-                            
-                        via_cost = 0
-                        if zi != zj:
-                            if not self.masker.via_fits(pi, min(zi, zj), max(zi, zj), net_id):
-                                continue
-                            via_cost = 1
-                            
                         prev_vias, prev_len, _ = dp[(i, zi)]
-                        cost_vias = prev_vias + via_cost
-                        cost_len = prev_len + dist
                         
-                        if (cost_vias, cost_len) < best_val:
-                            best_val = (cost_vias, cost_len)
-                            best_state = (i, zi)
+                        # Option A: via at pi (start of segment), segment on layer zj
+                        legal_a = self.masker.segment_legal(pi, pj, zj, net_id, hw)
+                        if zi != zj:
+                            legal_a = legal_a and self.masker.via_fits(pi, min(zi, zj), max(zi, zj), net_id)
+                        if legal_a:
+                            cost_vias = prev_vias + (1 if zi != zj else 0)
+                            cost_len = prev_len + dist
+                            if (cost_vias, cost_len) < best_val:
+                                best_val = (cost_vias, cost_len)
+                                best_state = (i, zi, True)
+                                
+                        # Option B: via at pj (end of segment), segment on layer zi
+                        if zi != zj:
+                            legal_b = self.masker.segment_legal(pi, pj, zi, net_id, hw)
+                            legal_b = legal_b and self.masker.via_fits(pj, min(zi, zj), max(zi, zj), net_id)
+                            if legal_b:
+                                cost_vias = prev_vias + 1
+                                cost_len = prev_len + dist
+                                if (cost_vias, cost_len) < best_val:
+                                    best_val = (cost_vias, cost_len)
+                                    best_state = (i, zi, False)
                             
                 if best_state is not None:
                     dp[(j, zj)] = (best_val[0], best_val[1], best_state)
@@ -358,13 +365,27 @@ class RoutingEnv:
         if best_term_z is None:
             return path
             
+        # Reconstruct path by backtracking
         opt_path_reversed = []
         curr_state = (N-1, best_term_z)
         while curr_state is not None:
-            i, z = curr_state
-            opt_path_reversed.append((path[i][0], path[i][1], z))
+            j, zj = curr_state
             parent = dp[curr_state][2]
-            curr_state = parent
+            if parent is None:
+                opt_path_reversed.append((path[j][0], path[j][1], zj))
+                break
+                
+            i, zi, via_at_start = parent
+            if via_at_start:
+                # via at start pi: segment is on zj
+                opt_path_reversed.append((path[j][0], path[j][1], zj))
+                opt_path_reversed.append((path[i][0], path[i][1], zj))
+            else:
+                # via at end pj: segment is on zi
+                opt_path_reversed.append((path[j][0], path[j][1], zj))
+                opt_path_reversed.append((path[j][0], path[j][1], zi))
+                
+            curr_state = (i, zi)
             
         opt_path = list(reversed(opt_path_reversed))
         
