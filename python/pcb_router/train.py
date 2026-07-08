@@ -75,7 +75,7 @@ def main():
     ppo = PPO(model, PPOConfig(), device=device)
 
     steps_done = 0
-    completions = deque(maxlen=20)
+    completions = deque(maxlen=max(20, args.n_envs))
     resume_from = args.resume or (str(ckpt_path) if ckpt_path.exists() else None)
     if resume_from:
         ckpt = load_checkpoint(resume_from, model, ppo, device=device)
