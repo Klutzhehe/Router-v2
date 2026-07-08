@@ -207,10 +207,17 @@ class RoutingEnv:
             self.board.add_trace(self.head.x, self.head.y, nx, ny,
                                  self.head.half_width, self.head.layer,
                                  self.head.net_id)
-            # Turn penalty: angle change from previous segment
+            # Turn penalty: quadratic in the normalized angle, not linear --
+            # a 90 deg corner costs 1/4 of a full reversal, not 1/2, so sharp
+            # turns are singled out while gentle curve corrections (small
+            # turn_frac, squared even smaller) stay nearly free. A linear
+            # penalty here priced a 10 deg wobble and a 170 deg hairpin at
+            # the same per-degree rate, which barely disciplined jagged
+            # zigzag or sharp-cornered loops (see the wasteful-loop render).
             turn_delta = abs(heading_angle - self.head.prev_heading_angle)
             turn_delta = min(turn_delta, 2.0 * np.pi - turn_delta)  # shorter arc
-            r -= rw.lam_turn * turn_delta / np.pi  # normalize to [0, 1]
+            turn_frac = turn_delta / np.pi  # in [0, 1]
+            r -= rw.lam_turn * turn_frac ** 2
             self.head.x, self.head.y = nx, ny
             self.head.prev_heading_angle = heading_angle
             self.head.just_placed_via = False

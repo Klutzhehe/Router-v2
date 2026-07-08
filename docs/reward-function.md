@@ -26,7 +26,7 @@ r_t \;=\;
 \underbrace{C \cdot \mathbb{1}\!\left[\text{net } n \text{ completed at } t\right]}_{\text{net completion}}
 \;-\; \underbrace{\lambda_1 \frac{\Delta\ell_t}{\mathrm{HPWL}_n}}_{\text{normalized length}}
 \;-\; \underbrace{\lambda_2 \cdot \mathbb{1}\!\left[a_t = \mathrm{PLACE\_VIA}\right]}_{\text{via usage}}
-\;-\; \underbrace{\lambda_{\text{turn}} \frac{|\Delta\theta_t|}{\pi}}_{\text{turn penalty}}
+\;-\; \underbrace{\lambda_{\text{turn}} \left(\frac{\Delta\theta_t}{\pi}\right)^{\!2}}_{\text{turn penalty}}
 \;-\; \underbrace{D \cdot \mathbb{1}\!\left[\text{DRC violation}\right]}_{\text{safety net}}
 \;+\; \underbrace{\beta\left(\Phi(s_{t+1}) - \Phi(s_t)\right)}_{\text{potential shaping (undiscounted, see note)}}
 $$
@@ -97,6 +97,17 @@ Notes:
   unsamplable. It exists as a safety net for floating-point edge cases in the
   geometry kernel; if it fires more than ~0 times per million steps, that is a
   C++ bug, not a training signal.
+- **Turn penalty is quadratic in the normalized angle, not linear.** A linear
+  penalty prices a 10° wobble and a 170° hairpin at the same per-degree
+  rate — the marginal cost of the first 10° of a turn equals the marginal
+  cost of the last 10° of a 90° turn. That barely disciplines jagged zigzag
+  or sharp-cornered detour loops (observed directly: a stage-0 render after
+  500k+ steps still routing one net through an unnecessary multi-mm loop).
+  Squaring the normalized angle keeps a full 180° reversal priced the same
+  as before ($1^2=1$) while a 90° corner drops to 1/4 of a reversal's cost
+  (not 1/2) and small course corrections (already a small fraction, squared
+  smaller still) stay close to free — sharp turns are singled out instead
+  of taxing every turn at a uniform rate.
 - **Stack-up penalty ($\lambda_{\text{turn}}$'s neighbor, $\lambda_{\text{stackup}}$,
   not shown above — see the constants table)**: boards with 4+ layers assign
   each layer a role, `LAYER_ROLE_SIGNAL` or `LAYER_ROLE_POWER`
@@ -150,7 +161,7 @@ $$
 | $D$ | $-50$ | Should never fire (see above) |
 | $\lambda_1$ | $1.0$ | Detour factor of 2 costs 1/10 of a net completion |
 | $\lambda_2$ | $0.5$ | Via ≈ 0.5 detour-units |
-| $\lambda_{\text{turn}}$ | $0.3$ | 180° turn costs 0.03 reward; pushes policy toward smoother routes without inducing "straight-line" gridding |
+| $\lambda_{\text{turn}}$ | $0.3$ | Quadratic in angle: a 180° reversal costs 0.3, a 90° corner costs 0.075 (1/4, not 1/2), small corrections cost next to nothing |
 | $\lambda_{\text{stackup}}$ | $0.5$ | Non-power net dwelling on a `POWER`-role layer (4+ layer boards only) |
 | $\lambda_3$ | $5.0$ | Per unit of relative impedance error (stubbed at 0 pending a solver) |
 | $\lambda_4$ | $2.0$ | Per mm of intra-pair routed-length mismatch (real, see terminal-reward note) |
