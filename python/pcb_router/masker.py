@@ -24,6 +24,10 @@ from .config import MAX_LAYERS, N_ACTION_TYPES, N_ANGLE_BINS, A_EXTEND, A_VIA, A
 
 _DIRS = geo.unit_dirs(N_ANGLE_BINS)
 _SAFETY = 1e-4   # mm shaved off every max distance for float robustness
+# Canonical-frame bin angles (bin 0 = at the target), precomputed for the
+# near-target cone cap in compute_mask.
+_CANON_COS = np.cos(2.0 * np.pi * np.arange(N_ANGLE_BINS) / N_ANGLE_BINS)
+_CANON_ABS_SIN = np.abs(np.sin(2.0 * np.pi * np.arange(N_ANGLE_BINS) / N_ANGLE_BINS))
 
 
 @dataclass
@@ -169,11 +173,28 @@ class ActionMasker:
         tp = self.board.pads[head.target_pad]
         d_target = float(np.linalg.norm(target - origin))
         
-        # Cap the target-directed bin so the max legal step lands exactly at the target.
-        # This naturally scales down the distance fractions when close to the pin,
-        # preventing via 'snowmen' (overlapping the pad off-center).
-        if d_target >= self.rules.min_segment_length and max_dist[0] > d_target:
-            max_dist[0] = d_target
+        # Near-target cone cap: every bin whose ray passes within commit_snap
+        # of the target has its max step clamped to the closest-approach
+        # point (d*cos(theta) along the ray), so the largest legal step
+        # ARRIVES beside the pad instead of sailing past it. Bin 0
+        # degenerates to the old "land exactly on the target" cap (which
+        # also prevented via 'snowmen' overlapping the pad off-center); the
+        # neighbouring bins are the fix for the overshoot-then-U-turn
+        # failure: a near-aligned full-lookahead step used to end several mm
+        # past the pad -- outside the snap radius, since COMMIT legality is
+        # only evaluated at the head's endpoint, never mid-segment -- and
+        # the only way back was a hairpin. Rays whose closest approach
+        # misses by more than commit_snap keep full reach, so deliberately
+        # routing past the target stays expressible. Angles are measured in
+        # the quantized canonical frame (<= half a bin off the true
+        # bearing): fine for a brake, and the same approximation the old
+        # bin-0 cap already made.
+        if d_target >= self.rules.min_segment_length:
+            along = d_target * _CANON_COS          # closest approach along each ray
+            miss = d_target * _CANON_ABS_SIN       # perpendicular miss at that point
+            cone = (along >= self.rules.min_segment_length) \
+                & (miss <= self.rules.commit_snap)
+            max_dist = np.where(cone, np.minimum(max_dist, along), max_dist)
             
         commit_ok = (
             tp.layer_lo <= head.layer <= tp.layer_hi

@@ -74,6 +74,15 @@ enum class ActionType : std::uint8_t { Extend = 0, PlaceVia = 1, CommitNet = 2 }
 // kNumAngleBins, and the env decodes EXTEND headings with the same offset.
 // A port that skips the roll (or the matching observation rotation) breaks
 // trained policies silently.
+//
+// Near-target cone cap (must match masker.py compute_mask): after the roll,
+// every bin whose ray passes within commit_snap of the target has
+// max_distance clamped to the closest-approach distance d*cos(theta_bin),
+// where d is the head->target distance and theta_bin the canonical bin
+// angle. Bin 0 thus lands exactly on the target; near-aligned bins stop
+// beside the pad instead of overshooting it (COMMIT legality is evaluated
+// only at the head's endpoint, so an uncapped full step past the pad forced
+// a U-turn). Rays missing by more than commit_snap keep full reach.
 struct ActionMask {
   std::array<std::uint8_t, kNumActionTypes> type_mask{};   // 1 = legal
   std::array<std::uint8_t, kNumAngleBins>  angle_mask{};   // per-direction (canonical)
