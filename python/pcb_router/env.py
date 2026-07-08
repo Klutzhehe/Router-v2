@@ -22,19 +22,7 @@ from .masker import ActionMask, ActionMasker, RoutingHead
 _DIRS = geo.unit_dirs(N_ANGLE_BINS)
 
 
-def _simplify_trace(board: Board, net_id: int) -> None:
-    """Greedy polyline simplification: try removing intermediate trace points.
 
-    For each pair of endpoints in the net's trace tree, check if a direct
-    capsule connection is legal; if so, replace the intermediate segments.
-    Repeat to fixed point. Assumes board.add_trace already handles multi-segment
-    collapsing internally (it doesn't yet), so this is a post-commit cleanup.
-    """
-    # Collect all trace segments for this net (simplified: just mark for cleanup)
-    # Real implementation would iterate over the routing tree, try greedy shortcuts,
-    # and rebuild if legal. For now, this is a stub; production routers use
-    # Visvalingam-Whyatt or similar. Keeping it minimal to avoid overfitting.
-    pass
 
 
 class PhysicsEvaluator:
@@ -159,6 +147,60 @@ class RoutingEnv:
         while not self.done and self.mask.type_mask.sum() == 0:
             self._advance_net(completed=False)
 
+    def _simplify_trace(self, net_id: int) -> None:
+        """Greedy polyline simplification: try removing intermediate trace points."""
+        net_traces = [t for t in self.board.traces if t[6] == net_id]
+        if not net_traces:
+            return
+
+        # Group net_traces into contiguous runs on the same layer.
+        runs = []
+        current_run = []
+        for t in net_traces:
+            if not current_run:
+                current_run.append(t)
+            else:
+                last_t = current_run[-1]
+                dist_connect = np.hypot(t[0] - last_t[2], t[1] - last_t[3])
+                if t[5] == last_t[5] and dist_connect < 1e-6:
+                    current_run.append(t)
+                else:
+                    runs.append(current_run)
+                    current_run = [t]
+        if current_run:
+            runs.append(current_run)
+
+        # Simplify each run using lookahead check
+        new_traces = [t for t in self.board.traces if t[6] != net_id]
+        for run in runs:
+            hw = run[0][4]
+            layer = run[0][5]
+            V = [np.array([run[0][0], run[0][1]])]
+            for t in run:
+                V.append(np.array([t[2], t[3]]))
+
+            simplified_V = []
+            i = 0
+            n_vertices = len(V)
+            while i < n_vertices:
+                simplified_V.append(V[i])
+                if i == n_vertices - 1:
+                    break
+                shortcut_j = i + 1
+                for j in range(n_vertices - 1, i + 1, -1):
+                    if self.masker.segment_legal(V[i], V[j], layer, net_id, hw):
+                        shortcut_j = j
+                        break
+                i = shortcut_j
+
+            for k in range(len(simplified_V) - 1):
+                ax, ay = simplified_V[k]
+                bx, by = simplified_V[k+1]
+                new_traces.append((float(ax), float(ay), float(bx), float(by), hw, layer, net_id))
+
+        self.board.traces = new_traces
+        self.board._version += 1
+
     def _mean_detour_factor(self) -> float:
         """Average (routed length / HPWL) over completed nets this episode --
         a direct efficiency metric distinct from completion rate. A pure
@@ -249,7 +291,7 @@ class RoutingEnv:
                 if net.signal_type != 1 and self.board.layer_roles[self.head.layer] == LAYER_ROLE_POWER:
                     r -= rw.lam_stackup * d / hpwl
             r += rw.C
-            _simplify_trace(self.board, self.head.net_id)
+            self._simplify_trace(self.head.net_id)
             self._advance_net(completed=True)
 
         else:
