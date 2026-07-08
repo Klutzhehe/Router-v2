@@ -110,8 +110,10 @@ def main():
         mean_ret = np.mean(stats["returns"]) if stats["returns"] else float("nan")
         mean_cmp = np.mean(completions) if completions else 0.0
         drc_total = int(sum(stats["drc"]))
+        total_nets = STAGES[min(stage, len(STAGES)-1)].n_nets
+        mean_nets_routed = mean_cmp * total_nets
         print(f"steps {steps_done:>8}  stage {stage}  "
-              f"ep_return {mean_ret:8.2f}  completion {mean_cmp:5.1%}  "
+              f"ep_return {mean_ret:8.2f}  completion {mean_cmp:5.1%} ({mean_nets_routed:.2f}/{total_nets} nets)  "
               f"entropy {upd['entropy']:6.3f}  pi {upd['pi_loss']:+.4f}  "
               f"v {upd['v_loss']:8.3f}  clip {upd['clip_frac']:5.1%}  drc {drc_total}  "
               f"commit_rate {stats['commit_rate']:5.1%}  {sps:6.0f} steps/s", flush=True)
