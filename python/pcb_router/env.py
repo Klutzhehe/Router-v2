@@ -193,6 +193,9 @@ class RoutingEnv:
                         break
                 i = shortcut_j
 
+            # Pull tight intermediate vertices to make them hug obstacles closely
+            simplified_V = self._pull_tight(simplified_V, layer, net_id, hw)
+
             # Chamfer corners > 45 degrees
             simplified_V = self._chamfer_corners(simplified_V, layer, net_id, hw)
 
@@ -203,6 +206,30 @@ class RoutingEnv:
 
         self.board.traces = new_traces
         self.board._version += 1
+
+    def _pull_tight(self, V: list[np.ndarray], layer: int, net_id: int, hw: float) -> list[np.ndarray]:
+        if len(V) < 3:
+            return V
+        
+        # We do 2 passes of relaxation
+        for _ in range(2):
+            for i in range(1, len(V) - 1):
+                p_old = V[i]
+                p_target = (V[i-1] + V[i+1]) / 2.0
+                
+                low = 0.0
+                high = 1.0
+                for _bin in range(8):
+                    mid_t = (low + high) / 2.0
+                    p = (1.0 - mid_t) * p_old + mid_t * p_target
+                    if self.masker.segment_legal(V[i-1], p, layer, net_id, hw) \
+                            and self.masker.segment_legal(p, V[i+1], layer, net_id, hw):
+                        low = mid_t
+                    else:
+                        high = mid_t
+                
+                V[i] = (1.0 - low) * p_old + low * p_target
+        return V
 
     def _chamfer_corners(self, V: list[np.ndarray], layer: int, net_id: int, hw: float) -> list[np.ndarray]:
         if len(V) < 3:
