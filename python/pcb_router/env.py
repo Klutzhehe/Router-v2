@@ -486,8 +486,11 @@ class RoutingEnv:
             head_state[5 + self.head.layer] = 1.0
             head_state[17] = len(self.completed) / max(len(b.nets), 1)
             head_state[18] = self.budget / self.cfg.max_steps_per_net
-            head_state[19] = np.cos(self.head.prev_heading_angle)
-            head_state[20] = np.sin(self.head.prev_heading_angle)
+            
+            canonical_prev_heading = self.head.prev_heading_angle - th
+            head_state[19] = np.cos(canonical_prev_heading)
+            head_state[20] = np.sin(canonical_prev_heading)
+            
             head_state[21] = 1.0 if (net.signal_type != 1
                                     and b.layer_roles[self.head.layer] == LAYER_ROLE_POWER) else 0.0
 
