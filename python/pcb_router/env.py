@@ -476,21 +476,21 @@ class RoutingEnv:
                                  self.head.half_width, self.head.layer,
                                  self.head.net_id)
             self.net_path.append((nx, ny, self.head.layer))
-            # Turn penalty: quadratic in the normalized angle, not linear --
-            # a 90 deg corner costs 1/4 of a full reversal, not 1/2, so sharp
-            # turns are singled out while gentle curve corrections (small
-            # turn_frac, squared even smaller) stay nearly free. A linear
-            # penalty here priced a 10 deg wobble and a 170 deg hairpin at
-            # the same per-degree rate, which barely disciplined jagged
-            # zigzag or sharp-cornered loops (see the wasteful-loop render).
-            turn_delta = abs(heading_angle - self.head.prev_heading_angle)
-            turn_delta = min(turn_delta, 2.0 * np.pi - turn_delta)  # shorter arc
-            turn_frac = turn_delta / np.pi  # in [0, 1]
-            r -= rw.lam_turn * turn_frac ** 2
-            
-            # Straight-line continuation bonus
-            straight_bonus = rw.lam_straight * max(0.0, 1.0 - (turn_frac * 4.0) ** 2)
-            r += straight_bonus
+            # Turn penalty + straight bonus — skipped on the very first EXTEND
+            # of a net because prev_heading_angle is a synthetic initialisation
+            # (pointing at the target), not a real prior move. Penalising the
+            # first step would bias the agent to always start facing the target
+            # even when it needs to dodge an obstacle immediately.
+            is_first_step = len(self.net_path) == 2  # only start + this new point
+            if not is_first_step:
+                turn_delta = abs(heading_angle - self.head.prev_heading_angle)
+                turn_delta = min(turn_delta, 2.0 * np.pi - turn_delta)  # shorter arc
+                turn_frac = turn_delta / np.pi  # in [0, 1]
+                r -= rw.lam_turn * turn_frac ** 2
+
+                # Straight-line continuation bonus
+                straight_bonus = rw.lam_straight * max(0.0, 1.0 - (turn_frac * 4.0) ** 2)
+                r += straight_bonus
             
             self.head.x, self.head.y = nx, ny
             self.head.prev_heading_angle = heading_angle
