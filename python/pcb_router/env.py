@@ -230,7 +230,16 @@ class RoutingEnv:
         self.board._version += 1
 
     def _optimize_vias_and_traces(self, net_id: int) -> list[tuple[float, float, int]]:
-        path = self.net_path
+        raw_path = self.net_path
+        if len(raw_path) < 2:
+            return list(raw_path)
+
+        # Deduplicate consecutive same-XY vertices (via transitions create duplicates)
+        path = [raw_path[0]]
+        for p in raw_path[1:]:
+            if abs(p[0] - path[-1][0]) > 1e-6 or abs(p[1] - path[-1][1]) > 1e-6 or p[2] != path[-1][2]:
+                path.append(p)
+
         if len(path) < 2:
             return path
             
@@ -246,6 +255,8 @@ class RoutingEnv:
             if z != z_start:
                 if self.masker.via_fits(p0, min(z_start, z), max(z_start, z), net_id):
                     dp[(0, z)] = (1, 0.0, (0, z_start, True))
+
+        _DP_WINDOW = 12  # max lookback window to keep O(N*W) instead of O(N^2)
                     
         N = len(path)
         for j in range(1, N):
@@ -254,7 +265,7 @@ class RoutingEnv:
                 best_state = None
                 best_val = (999999, 999999.0)
                 
-                for i in range(j):
+                for i in range(max(0, j - _DP_WINDOW), j):
                     pi = np.array([path[i][0], path[i][1]])
                     dist = float(np.linalg.norm(pj - pi))
                     
