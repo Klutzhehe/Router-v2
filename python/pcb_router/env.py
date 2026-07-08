@@ -133,10 +133,12 @@ class RoutingEnv:
     def _start_current_net(self):
         net = self.board.nets[self.order[self.cur]]
         pa, pb = self.board.pads[net.pins[0]], self.board.pads[net.pins[1]]
+        init_angle = float(np.arctan2(pb.y - pa.y, pb.x - pa.x) % (2.0 * np.pi))
         self.head = RoutingHead(
             x=pa.x, y=pa.y, layer=pa.layer_lo, net_id=self.order[self.cur],
             half_width=net.trace_width / 2.0,
-            target_x=pb.x, target_y=pb.y, target_pad=net.pins[1])
+            target_x=pb.x, target_y=pb.y, target_pad=net.pins[1],
+            prev_heading_angle=init_angle)
         self.budget = self.cfg.max_steps_per_net
         self.mask = self.masker.compute_mask(self.head, self.cfg.lookahead)
 
