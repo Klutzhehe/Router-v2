@@ -157,6 +157,22 @@ class RoutingEnv:
         while not self.done and self.mask.type_mask.sum() == 0:
             self._advance_net(completed=False)
 
+    def _mean_detour_factor(self) -> float:
+        """Average (routed length / HPWL) over completed nets this episode --
+        a direct efficiency metric distinct from completion rate. A pure
+        straight-line route can score *below* 1.0 (Euclidean <= Manhattan =
+        HPWL); values well above 1.0 mean wasted copper, not obstacle
+        avoidance. NaN if nothing completed (nothing to measure)."""
+        if not self.completed:
+            return float("nan")
+        completed_set = set(self.completed)
+        lengths: Dict[int, float] = {}
+        for (ax, ay, bx, by, _hw, _layer, net_id) in self.board.traces:
+            if net_id in completed_set:
+                lengths[net_id] = lengths.get(net_id, 0.0) + float(np.hypot(bx - ax, by - ay))
+        factors = [lengths.get(nid, 0.0) / self.board.nets[nid].hpwl for nid in self.completed]
+        return float(np.mean(factors))
+
     # ----------------------------------------------------------------- MDP
     def _phi(self) -> float:
         """Potential: -(distance to target)/HPWL of the current net."""
@@ -288,7 +304,8 @@ class RoutingEnv:
 
         info = {"nets_done": len(self.completed),
                 "nets_total": len(self.board.nets),
-                "drc": self.drc_count, "steps": self.ep_steps}
+                "drc": self.drc_count, "steps": self.ep_steps,
+                "detour_factor": self._mean_detour_factor() if self.done else float("nan")}
         return self._obs(), self._mask_arrays(), float(r), self.done, info
 
     # ---------------------------------------------------------- observation

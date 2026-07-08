@@ -188,8 +188,17 @@ on same-layer congestion-solving rather than letting the agent dodge
 obstacles by hopping to an ever-larger pool of empty layers. Curriculum
 advancement itself is also stricter than a single lucky rollout: `train.py`
 requires the rolling completion rate to clear `--advance-at` (default 0.99)
-over a full `--advance-window` (default 50) episodes, *and* hold for
-`--advance-streak` (default 3) consecutive PPO updates before promoting.
+**and** the rolling mean detour factor (routed length / HPWL, over completed
+nets) to clear `--advance-max-detour` (default 1.5), both over a full
+`--advance-window` (default 50) episodes, *and* hold for `--advance-streak`
+(default 3) consecutive PPO updates before promoting. The detour-factor half
+of the gate exists because completion rate alone let a stage graduate a
+policy that finishes nets by wasteful, looping routes rather than routing
+efficiently (observed directly: a stage-0 render after 500k+ steps showing
+a net swinging several mm out of its way to connect two nearby pads) --
+completion (a big sparse reward) is learned well before length efficiency
+(a small dense per-step penalty), so a completion-only gate systematically
+graduates policies before they've actually mastered a stage's routing.
 
 Scaling beyond (1000-pin BGA, multi-pin Steiner nets) requires raising
 `N_MAX_PINS`/`P_MAX` in `config.py` and the roadmap items in §8.

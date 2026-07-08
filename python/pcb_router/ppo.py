@@ -164,11 +164,14 @@ class PPO:
 
 def save_checkpoint(path, model: DualStreamRouter, ppo: "PPO", stage: int,
                     steps_done: int, completions, history: Optional[list] = None,
-                    consecutive_hits: int = 0):
+                    consecutive_hits: int = 0, detour_factors=None):
     """Full training state, not just weights: resuming from this must not
     reset Adam momentum, forget the curriculum stage, or lose step count.
     consecutive_hits is the curriculum advance-gate streak (see train.py) --
-    persisted so resuming a run doesn't silently forget an in-progress streak."""
+    persisted so resuming a run doesn't silently forget an in-progress streak.
+    detour_factors is the parallel rolling window for the efficiency half of
+    that gate (completion rate alone doesn't catch a stage graduating a
+    policy that "completes wastefully" -- see train.py)."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     tmp = str(path) + ".tmp"
     torch.save({
@@ -179,6 +182,7 @@ def save_checkpoint(path, model: DualStreamRouter, ppo: "PPO", stage: int,
         "completions": list(completions),
         "history": history or [],
         "consecutive_hits": consecutive_hits,
+        "detour_factors": list(detour_factors) if detour_factors is not None else [],
     }, tmp)
     Path(tmp).replace(path)   # atomic on the same filesystem: no half-written files
 
@@ -207,7 +211,8 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
     if obs is None:
         obs, masks = env.reset()
     buf = RolloutBuffer(T, obs, device)
-    ep_returns, ep_completions, ep_drc, ep_nets_total, ep_ret = [], [], [], [], 0.0
+    ep_returns, ep_completions, ep_drc, ep_nets_total, ep_detour, ep_ret = \
+        [], [], [], [], [], 0.0
     commit_legal_steps = commit_taken_steps = 0
 
     with torch.no_grad():
@@ -240,6 +245,7 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
                 ep_completions.append(info["nets_done"] / info["nets_total"])
                 ep_drc.append(info["drc"])
                 ep_nets_total.append(info["nets_total"])
+                ep_detour.append(info["detour_factor"])
                 ep_ret = 0.0
                 next_obs, next_masks = env.reset()
             obs, masks = next_obs, next_masks
@@ -255,6 +261,7 @@ def collect_rollout(env, model: DualStreamRouter, T: int, device: str,
         "completions": ep_completions,
         "drc": ep_drc,
         "nets_total": ep_nets_total,
+        "detour_factor": ep_detour,
         # When COMMIT is legal (head within snap distance of target), how
         # often does the policy actually take it vs. keep extending past it?
         "commit_rate": (commit_taken_steps / commit_legal_steps
@@ -351,7 +358,7 @@ def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
     if obs is None:
         obs, masks = vec_env.reset()
     buf = VecRolloutBuffer(steps_per_env, n, {k: v[0] for k, v in obs.items()}, device)
-    ep_returns, ep_completions, ep_drc, ep_nets_total = [], [], [], []
+    ep_returns, ep_completions, ep_drc, ep_nets_total, ep_detour = [], [], [], [], []
     ep_ret = np.zeros(n, dtype=np.float32)
     commit_legal_steps = commit_taken_steps = 0
 
@@ -388,6 +395,7 @@ def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
                     ep_completions.append(infos[i]["nets_done"] / infos[i]["nets_total"])
                     ep_drc.append(infos[i]["drc"])
                     ep_nets_total.append(infos[i]["nets_total"])
+                    ep_detour.append(infos[i]["detour_factor"])
                     ep_ret[i] = 0.0
             obs, masks = next_obs, next_masks
 
@@ -402,6 +410,7 @@ def collect_rollout_vec(vec_env, model: DualStreamRouter, steps_per_env: int,
         "completions": ep_completions,
         "drc": ep_drc,
         "nets_total": ep_nets_total,
+        "detour_factor": ep_detour,
         "commit_rate": (commit_taken_steps / commit_legal_steps
                         if commit_legal_steps else float("nan")),
         "commit_legal_steps": commit_legal_steps,
