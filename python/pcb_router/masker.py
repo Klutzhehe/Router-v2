@@ -43,9 +43,11 @@ class RoutingHead:
 @dataclass
 class ActionMask:
     type_mask: np.ndarray      # (3,)  uint8
-    angle_mask: np.ndarray     # (64,) uint8
-    max_distance: np.ndarray   # (64,) float
+    angle_mask: np.ndarray     # (64,) uint8 -- canonical frame (bin 0 = at target)
+    max_distance: np.ndarray   # (64,) float -- canonical frame
     layer_mask: np.ndarray     # (12,) uint8
+    frame_offset: int          # world bin closest to the target direction;
+                               # world_bin = (canonical_bin + frame_offset) % N_ANGLE_BINS
 
 
 class ActionMasker:
@@ -133,11 +135,25 @@ class ActionMasker:
     def compute_mask(self, head: RoutingHead, lookahead: float) -> ActionMask:
         origin = np.array([head.x, head.y])
 
-        # EXTEND: per-direction legal travel.
-        max_dist = self.max_legal_distances(origin, _DIRS, head.layer,
-                                            head.net_id, head.half_width,
-                                            lookahead)
-        angle_mask = (max_dist >= self.rules.min_segment_length).astype(np.uint8)
+        # Target-aligned canonical frame: find the world bin closest to the
+        # target direction, then roll the per-direction arrays so canonical
+        # bin 0 is that direction. world_bin = (canonical_bin + frame_offset)
+        # % N_ANGLE_BINS (see config.py / env.py -- this must be the ONLY
+        # place frame_offset is derived from world geometry).
+        dx, dy = head.target_x - head.x, head.target_y - head.y
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            frame_offset = 0
+        else:
+            theta = np.arctan2(dy, dx) % (2.0 * np.pi)
+            frame_offset = int(round(theta / (2.0 * np.pi / N_ANGLE_BINS))) % N_ANGLE_BINS
+
+        # EXTEND: per-direction legal travel (world frame, then rolled).
+        max_dist_world = self.max_legal_distances(origin, _DIRS, head.layer,
+                                                   head.net_id, head.half_width,
+                                                   lookahead)
+        angle_mask_world = (max_dist_world >= self.rules.min_segment_length).astype(np.uint8)
+        max_dist = np.roll(max_dist_world, -frame_offset)
+        angle_mask = np.roll(angle_mask_world, -frame_offset)
 
         # PLACE_VIA: which target layers can this position reach?
         layer_mask = np.zeros(MAX_LAYERS, dtype=np.uint8)
@@ -165,4 +181,5 @@ class ActionMasker:
         type_mask[A_COMMIT] = 1 if commit_ok else 0
 
         return ActionMask(type_mask=type_mask, angle_mask=angle_mask,
-                          max_distance=max_dist, layer_mask=layer_mask)
+                          max_distance=max_dist, layer_mask=layer_mask,
+                          frame_offset=frame_offset)

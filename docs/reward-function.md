@@ -14,7 +14,7 @@ the Python training loop must both read from this spec.
 | $\mathrm{HPWL}_n$ | Half-perimeter wirelength lower bound of net $n$ (scale normalizer) |
 | $N, N_c$ | Total nets / nets completed at episode end |
 | $Z_i, Z_i^*$ | Achieved / required impedance of high-speed net $i$ (from 2.5D solver) |
-| $\Delta t_p$ | Intra-pair skew of differential pair $p$; $\tau_{\max}$ = allowed skew |
+| $\Delta\ell_p$ | Intra-pair routed-length mismatch of differential pair $p$ (mm) — a proxy for timing skew; see note below |
 | $\mathrm{XT}_{ij}$ | Crosstalk coupling metric between nets $i, j$ (solver hook) |
 | $d_{\mathrm{geo}}(s)$ | Euclidean distance from routing head to current target pad |
 | $\gamma$ | Discount factor |
@@ -97,6 +97,18 @@ Notes:
   unsamplable. It exists as a safety net for floating-point edge cases in the
   geometry kernel; if it fires more than ~0 times per million steps, that is a
   C++ bug, not a training signal.
+- **Stack-up penalty ($\lambda_{\text{turn}}$'s neighbor, $\lambda_{\text{stackup}}$,
+  not shown above — see the constants table)**: boards with 4+ layers assign
+  each layer a role, `LAYER_ROLE_SIGNAL` or `LAYER_ROLE_POWER`
+  (`generator.stackup_roles`), mirroring a real stack-up's dedicated
+  ground/power planes. Routing is never blocked by this — a non-power net
+  (`signal_type != 1`) is legal on a `POWER`-role layer, but pays
+  $\lambda_{\text{stackup}}\cdot\Delta\ell_t/\mathrm{HPWL}_n$ per step it
+  dwells there (same normalized-length shape as $\lambda_1$). Power/ground
+  nets pay nothing on power layers, and nobody pays anything on
+  `SIGNAL`-role layers (general-purpose, matches real boards where short
+  power stubs on a signal layer are normal). Via barrels merely *crossing* a
+  power layer are not penalized, only copper actually routed there.
 
 ## Terminal reward (step $T$)
 
@@ -105,14 +117,22 @@ R_T \;=\;
 B\,\frac{N_c}{N}
 \;-\; F \cdot \mathbb{1}\!\left[N_c < N\right]
 \;-\; \lambda_3 \!\!\sum_{i \in \mathcal{H}} \frac{\left|Z_i - Z_i^*\right|}{Z_i^*}
-\;-\; \lambda_4 \!\!\sum_{p \in \mathcal{P}} \max\!\left(0,\; \left|\Delta t_p\right| - \tau_{\max}\right)
+\;-\; \lambda_4 \cdot \mathrm{mean}_{p \in \mathcal{P}} \left|\Delta\ell_p\right|
 \;-\; \lambda_5 \!\!\sum_{(i,j)} \mathrm{XT}_{ij}
 $$
 
 where $\mathcal{H}$ is the set of impedance-controlled nets and $\mathcal{P}$
-the set of differential pairs. The $\lambda_3, \lambda_4, \lambda_5$ terms are
-produced by the 2.5D field-solver hook (`PhysicsEvaluator` API in the C++
-engine); when the solver is disabled they are zero.
+the set of completed differential pairs (`Net.pair_id` groups). $\lambda_3$
+(impedance) and $\lambda_5$ (crosstalk) are still produced by the stubbed
+2.5D field-solver hook (`PhysicsEvaluator.evaluate`) and are zero until a
+real solver plugs in. **$\lambda_4$ (skew) is real, not stubbed**: for each
+pair where both nets completed, $\Delta\ell_p$ is the absolute difference
+between the two nets' total routed trace length (summed straight from
+`board.traces`), averaged across all completed pairs — the "length mismatch
+is nearly free to compute" simplification from `PROJECT.md`'s roadmap. This
+is a routed-length proxy for timing skew, not an actual propagation-delay
+calculation (no trace-velocity model exists yet); a pair with one net
+unfinished contributes no skew term (nothing to fairly compare against).
 
 ## Total return
 
@@ -131,8 +151,9 @@ $$
 | $\lambda_1$ | $1.0$ | Detour factor of 2 costs 1/10 of a net completion |
 | $\lambda_2$ | $0.5$ | Via ≈ 0.5 detour-units |
 | $\lambda_{\text{turn}}$ | $0.3$ | 180° turn costs 0.03 reward; pushes policy toward smoother routes without inducing "straight-line" gridding |
-| $\lambda_3$ | $5.0$ | Per unit of relative impedance error |
-| $\lambda_4$ | $2.0$ | Per ps of excess skew (tune per stack-up) |
+| $\lambda_{\text{stackup}}$ | $0.5$ | Non-power net dwelling on a `POWER`-role layer (4+ layer boards only) |
+| $\lambda_3$ | $5.0$ | Per unit of relative impedance error (stubbed at 0 pending a solver) |
+| $\lambda_4$ | $2.0$ | Per mm of intra-pair routed-length mismatch (real, see terminal-reward note) |
 | $\lambda_5$ | $1.0$ | Solver-metric dependent |
 | $\beta$ | $1.5$ | Shaping weight — **must exceed $\lambda_1$** (see note above); was $3.0$, lowered to tighten steering cone and reduce wander |
 | $\gamma$ | $0.995$ | Long horizons on large boards. **GAE/PPO discount only** (`PPOConfig.gamma`) — the shaping term is undiscounted by design (see note above) |

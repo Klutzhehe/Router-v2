@@ -15,8 +15,8 @@ import numpy as np
 from . import geometry as geo
 from .board import Board, KIND_PAD, KIND_KEEPOUT
 from .config import (A_COMMIT, A_EXTEND, A_VIA, EnvConfig, HEAD_FEAT_DIM,
-                     MAX_LAYERS, N_ANGLE_BINS, N_MAX_PINS, NODE_FEAT_DIM,
-                     P_MAX, POINT_FEAT_DIM, DIST_FRACTIONS)
+                     LAYER_ROLE_POWER, MAX_LAYERS, N_ANGLE_BINS, N_MAX_PINS,
+                     NODE_FEAT_DIM, P_MAX, POINT_FEAT_DIM, DIST_FRACTIONS)
 from .masker import ActionMask, ActionMasker, RoutingHead
 
 _DIRS = geo.unit_dirs(N_ANGLE_BINS)
@@ -40,13 +40,32 @@ def _simplify_trace(board: Board, net_id: int) -> None:
 class PhysicsEvaluator:
     """API hook for a 2.5D electromagnetic field solver.
 
-    Called once at episode end with the fully routed board. The default
-    implementation returns zeros; a real solver (or learned surrogate) plugs
-    in here without touching the environment.
+    Called once at episode end with the fully routed board. impedance/
+    crosstalk stay stubbed at zero pending a real solver; skew is real --
+    differential pairs (Net.pair_id) get their routed length measured
+    directly from board.traces (the "length mismatch is nearly free to
+    compute" note in PROJECT.md's roadmap).
     """
 
     def evaluate(self, board: Board, completed: list) -> Dict[str, float]:
-        return {"impedance": 0.0, "skew": 0.0, "crosstalk": 0.0}
+        completed_set = set(completed)
+        pair_lengths: Dict[int, Dict[int, float]] = {}
+        for (ax, ay, bx, by, _hw, _layer, net_id) in board.traces:
+            if net_id not in completed_set:
+                continue
+            pair_id = board.nets[net_id].pair_id
+            if pair_id is None:
+                continue
+            lengths = pair_lengths.setdefault(pair_id, {})
+            lengths[net_id] = lengths.get(net_id, 0.0) + float(np.hypot(bx - ax, by - ay))
+
+        skews = []
+        for lengths in pair_lengths.values():
+            if len(lengths) == 2:
+                v1, v2 = lengths.values()
+                skews.append(abs(v1 - v2))
+        skew = float(np.mean(skews)) if skews else 0.0
+        return {"impedance": 0.0, "skew": skew, "crosstalk": 0.0}
 
 
 class RoutingEnv:
@@ -69,8 +88,9 @@ class RoutingEnv:
         self.board = self.factory(self.rng)
         self.masker = ActionMasker(self.board)
         # Route easy (short-HPWL) nets first.
-        self.order = sorted(range(len(self.board.nets)),
-                            key=lambda i: self.board.nets[i].hpwl)
+        order = sorted(range(len(self.board.nets)),
+                       key=lambda i: self.board.nets[i].hpwl)
+        self.order = self._splice_diff_pairs(order)
         self.cur = 0
         self.completed: list[int] = []
         self.last_completion = None
@@ -81,12 +101,41 @@ class RoutingEnv:
         self._skip_dead_nets()
         return self._obs(), self._mask_arrays()
 
+    def _splice_diff_pairs(self, order: list) -> list:
+        """Re-splice HPWL-sorted net order so each differential pair's two
+        nets route back-to-back: the second net then sees the first net's
+        copper as an obstacle, which is what naturally pulls it into a
+        near-parallel path under the normal clearance rules."""
+        nets = self.board.nets
+        partner_of: Dict[int, int] = {}
+        by_pair: Dict[int, list] = {}
+        for idx in order:
+            pid = nets[idx].pair_id
+            if pid is not None:
+                by_pair.setdefault(pid, []).append(idx)
+        for idxs in by_pair.values():
+            if len(idxs) == 2:
+                partner_of[idxs[0]] = idxs[1]
+                partner_of[idxs[1]] = idxs[0]
+
+        result, placed = [], set()
+        for idx in order:
+            if idx in placed:
+                continue
+            result.append(idx)
+            placed.add(idx)
+            partner = partner_of.get(idx)
+            if partner is not None and partner not in placed:
+                result.append(partner)
+                placed.add(partner)
+        return result
+
     def _start_current_net(self):
         net = self.board.nets[self.order[self.cur]]
         pa, pb = self.board.pads[net.pins[0]], self.board.pads[net.pins[1]]
         self.head = RoutingHead(
             x=pa.x, y=pa.y, layer=pa.layer_lo, net_id=self.order[self.cur],
-            half_width=self.board.rules.trace_width / 2.0,
+            half_width=net.trace_width / 2.0,
             target_x=pb.x, target_y=pb.y, target_pad=net.pins[1])
         self.budget = self.cfg.max_steps_per_net
         self.mask = self.masker.compute_mask(self.head, self.cfg.lookahead)
@@ -150,6 +199,10 @@ class RoutingEnv:
             self.head.prev_heading_angle = heading_angle
             self.head.just_placed_via = False
             r -= rw.lam1 * dist / hpwl
+            # Stack-up penalty: legal, but a non-power net dwelling on a
+            # dedicated power/ground plane isn't "supposed to be here".
+            if net.signal_type != 1 and self.board.layer_roles[self.head.layer] == LAYER_ROLE_POWER:
+                r -= rw.lam_stackup * dist / hpwl
 
         elif a_type == A_VIA and self.mask.type_mask[A_VIA] \
                 and self.mask.layer_mask[layer]:
@@ -168,6 +221,8 @@ class RoutingEnv:
                                      self.head.half_width, self.head.layer,
                                      self.head.net_id)
                 r -= rw.lam1 * d / hpwl
+                if net.signal_type != 1 and self.board.layer_roles[self.head.layer] == LAYER_ROLE_POWER:
+                    r -= rw.lam_stackup * d / hpwl
             r += rw.C
             _simplify_trace(self.board, self.head.net_id)
             self._advance_net(completed=True)
@@ -262,7 +317,8 @@ class RoutingEnv:
                             1.0 if p.net_id == cur_net else 0.0,
                             1.0 if p.net_id in self.completed else 0.0,
                             1.0 if (self.head and i == self.head.target_pad) else 0.0,
-                            net.z_required / 100.0, net.signal_type / 2.0]
+                            net.z_required / 100.0, net.signal_type / 2.0,
+                            net.trace_width / 0.5, float(b.layer_roles[p.layer_lo])]
             node_mask[i] = 1.0
             if p.net_id == cur_net:
                 cur_net_mask[i] = 1.0
@@ -391,6 +447,8 @@ class RoutingEnv:
             head_state[18] = self.budget / self.cfg.max_steps_per_net
             head_state[19] = np.cos(self.head.prev_heading_angle)
             head_state[20] = np.sin(self.head.prev_heading_angle)
+            head_state[21] = 1.0 if (net.signal_type != 1
+                                    and b.layer_roles[self.head.layer] == LAYER_ROLE_POWER) else 0.0
 
         return {"node_feats": node_feats, "adj": adj, "node_mask": node_mask,
                 "cur_net_mask": cur_net_mask, "points": points,

@@ -20,9 +20,19 @@ MAX_LAYERS = 12
 # ---- Fixed observation dims (padded for trivial batching) -------------------
 N_MAX_PINS = 64                      # max pads per board (netlist graph nodes)
 P_MAX = 256                          # max points in the egocentric cloud
-NODE_FEAT_DIM = 8
+NODE_FEAT_DIM = 10                   # was 8: + per-pad trace_width, + per-pad layer_role
 POINT_FEAT_DIM = 10
-HEAD_FEAT_DIM = 21                   # position(2) + target_offset(2) + distance(1) + layer_onehot(12) + completion(1) + budget(1) + prev_heading_cos_sin(2) = 21
+HEAD_FEAT_DIM = 22                   # position(2) + target_offset(2) + distance(1) + layer_onehot(12)
+                                     # + completion(1) + budget(1) + prev_heading_cos_sin(2)
+                                     # + stackup_mismatch(1) = 22
+
+# ---- Stack-up layer roles ----------------------------------------------------
+# A layer's "role" governs the stack-up penalty in env.step: routing a
+# non-power net's copper on a POWER-role layer is legal (never masked) but
+# costs RewardWeights.lam_stackup, same normalized-length shape as lam1.
+# SIGNAL-role layers are general-purpose -- nobody is penalized there.
+LAYER_ROLE_SIGNAL = 0
+LAYER_ROLE_POWER = 1
 
 
 @dataclass
@@ -55,6 +65,7 @@ class RewardWeights:
     lam4: float = 2.0                # differential skew    (physics hook)
     lam5: float = 1.0                # crosstalk            (physics hook)
     lam_turn: float = 0.3            # turn-angle penalty (radians normalized)
+    lam_stackup: float = 0.5         # non-power net dwelling on a POWER-role layer
     beta: float = 1.5                # potential-based shaping weight; MUST stay
                                      # > lam1 or moving toward the target earns
                                      # net-zero and "don't move" becomes a local

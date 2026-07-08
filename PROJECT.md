@@ -138,7 +138,8 @@ Router2/
     │   ├── board.py              ← board state (discs + capsules)
     │   ├── masker.py             ← dynamic action masking
     │   ├── env.py                ← RL environment + physics hook
-    │   ├── generator.py          ← curriculum board generator
+    │   ├── footprints.py         ← component footprint library (passives, headers, ICs)
+    │   ├── generator.py          ← curriculum board generator (places footprints, not random pads)
     │   ├── model.py              ← DualStreamRouter (pure torch)
     │   ├── ppo.py                ← PPO + GAE + rollout collection + checkpoint I/O
     │   ├── train.py              ← curriculum training entry point (CLI)
@@ -154,16 +155,35 @@ Router2/
 
 ## 5. Curriculum
 
-| Stage | Layers | Board | Nets | Keep-outs | Cross-layer pads (forces vias) |
-|---|---|---|---|---|---|
-| 0 | 2 | 20×20 mm | 3 | 0 | — |
-| 1 | 2 | 25×25 mm | 6 | 2 | — |
-| 2 | 2 | 25×25 mm | 8 | 2 | 30% |
-| 3 | 4 | 30×30 mm | 12 | 4 | 30% |
-| 4 | 6 | 40×40 mm | 20 | 8 | 40% |
-| 5 | 12 | 50×50 mm | 30 | 12 | 50% |
+Boards are assembled from a small component footprint library
+(`footprints.py`: passives, headers, ICs) placed with realistic pin pitch
+and courtyard keep-outs — not floating random pads. Net counts are
+therefore **RNG-dependent** (component placement, decoupling-cap placement,
+and diff-pair placement can each fail to find room and get skipped), so the
+table below gives approximate counts, not exact ones. 4+ layer boards get a
+real stack-up (`generator.stackup_roles`): dedicated power/ground layers
+that are legal to route through but cost `RewardWeights.lam_stackup` if a
+non-power net dwells there — this, not just adding more layers, is what
+curbs "hop to an empty layer to dodge congestion."
 
-Scaling beyond (1000-pin BGA, differential pairs) requires raising
+| Stage | Layers | Stack-up | Board | ~Nets | Diff pairs |
+|---|---|---|---|---|---|
+| 0 | 2 | none | 20×20 mm | 3 | — |
+| 1 | 2 | none | 25×25 mm | 6 | — |
+| 2 | 2 | none (bottom-mount pads force vias) | 28×28 mm | 9 | — |
+| 3 | 4 | 1 dedicated power/gnd layer | 32×32 mm | 16 | 1 |
+| 4 | 6 | 2 dedicated power/gnd layers | 38×38 mm | 25 | 2 |
+| 5 | 6 (cap) | 2 dedicated power/gnd layers | 45×45 mm | 27 | 2 |
+
+The layer cap is 6 (was 12) — deliberately, so the curriculum stays focused
+on same-layer congestion-solving rather than letting the agent dodge
+obstacles by hopping to an ever-larger pool of empty layers. Curriculum
+advancement itself is also stricter than a single lucky rollout: `train.py`
+requires the rolling completion rate to clear `--advance-at` (default 0.99)
+over a full `--advance-window` (default 50) episodes, *and* hold for
+`--advance-streak` (default 3) consecutive PPO updates before promoting.
+
+Scaling beyond (1000-pin BGA, multi-pin Steiner nets) requires raising
 `N_MAX_PINS`/`P_MAX` in `config.py` and the roadmap items in §8.
 
 ---
@@ -206,12 +226,14 @@ you'll actually be watching it happen.
 
 | Stage | Board | Rough steps to ~90%+ completion |
 |---|---|---|
-| 0 | 3 nets, 2 layers | 100k–400k |
-| 1 | 6 nets, 2 layers, keep-outs | 200k–600k |
-| 2 | 8 nets, +cross-layer pads (forces vias) | 300k–800k |
-| 3 | 12 nets, 4 layers | 500k–1.5M |
-| 4 | 20 nets, 6 layers | 1M–3M |
-| 5 | 30 nets, 12 layers | 2M+, likely needs imitation warm-start (§8) |
+| 0 | ~3 nets, 2 layers | 100k–400k |
+| 1 | ~6 nets, 2 layers, keep-outs | 200k–600k |
+| 2 | ~9 nets, bottom-mount pads (forces vias) | 300k–800k |
+| 3 | ~16 nets, 4 layers, stack-up + 1st diff pair | 500k–1.5M |
+| 4 | ~25 nets, 6 layers | 1M–3M |
+| 5 | ~27 nets, 6 layers (cap) | 2M+, likely needs imitation warm-start (§8) |
+
+See §5 for the full curriculum table and why the layer cap is 6, not 12.
 
 The one hard invariant, independent of budget: **DRC count must always be 0**.
 If it isn't, stop and treat it as a geometry-kernel bug, not a training issue.
@@ -290,8 +312,13 @@ collision checks, is the thing to optimize there too.
 3. **Rendering** — matplotlib/SVG board renderer for debugging and demos.
 4. **Rip-up & re-route** — add a TEAR action or episode-level restarts so one
    badly placed net cannot permanently block another.
-5. **Differential pairs** — paired routing heads, per-step skew proxy reward
-   (running length mismatch is nearly free to compute).
+5. ~~**Differential pairs (length-mismatch half)**~~ — done: `generator.py`
+   places real P/N pairs (`Net.pair_id`, matched pitch/width), `env.py`
+   splices them to route back-to-back, and `PhysicsEvaluator.evaluate`
+   measures real skew (routed-length mismatch) feeding `lam4`. **Still
+   open**: paired routing heads (simultaneous P+N routing via a doubled
+   action/observation space) — a materially larger architecture change than
+   the length-mismatch proxy above.
 6. **Physics solver** — implement the `PhysicsEvaluator` hook: start with a
    Hammerstad/Jensen microstrip impedance approximation (cheap, per-trace),
    graduate to a real 2.5D solver on subsampled episodes or a learned

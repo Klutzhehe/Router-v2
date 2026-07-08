@@ -9,9 +9,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pcb_router import geometry as geo                       # noqa: E402
-from pcb_router.config import EnvConfig                      # noqa: E402
-from pcb_router.env import RoutingEnv                        # noqa: E402
-from pcb_router.generator import generate_board              # noqa: E402
+from pcb_router.config import EnvConfig, N_MAX_PINS           # noqa: E402
+from pcb_router.env import RoutingEnv                         # noqa: E402
+from pcb_router.generator import STAGES, generate_board       # noqa: E402
 
 
 def random_legal_action(masks, rng):
@@ -48,9 +48,9 @@ def verify_clearances(board):
     return worst
 
 
-def test_masked_actions_are_legal(episodes=5, seed=7):
+def test_masked_actions_are_legal(episodes=3, seed=7):
     rng = np.random.default_rng(seed)
-    for stage in (0, 1, 3):
+    for stage in range(len(STAGES)):
         for ep in range(episodes):
             env = RoutingEnv(lambda r, s=stage: generate_board(s, r),
                              cfg=EnvConfig(), seed=seed + ep + 100 * stage)
@@ -73,17 +73,56 @@ def test_masked_actions_are_legal(episodes=5, seed=7):
 def test_obs_shapes(seed=3):
     env = RoutingEnv(lambda r: generate_board(0, r), seed=seed)
     obs, masks = env.reset()
-    assert obs["node_feats"].shape == (64, 8)
+    assert obs["node_feats"].shape == (64, 10)
     assert obs["adj"].shape == (64, 64)
     assert obs["points"].shape == (256, 10)
-    assert obs["head_state"].shape == (19,)
+    assert obs["head_state"].shape == (22,)
     assert masks["type"].shape == (3,) and masks["angle"].shape == (64,)
     assert masks["layer"].shape == (12,)
     assert masks["type"].any(), "stage-0 start must have a legal action"
     print("test_obs_shapes OK")
 
 
+def test_generator_smoke(seed=11):
+    """Board generation invariants across every curriculum stage: pad/net
+    count stays within N_MAX_PINS, every pad resolves to a valid net, and
+    differential pairs (where present) share trace width and route
+    back-to-back once RoutingEnv splices the net order."""
+    for stage in range(len(STAGES)):
+        rng = np.random.default_rng(seed + stage)
+        board = generate_board(stage, rng)
+        n_pads, n_nets = len(board.pads), len(board.nets)
+        assert n_pads == 2 * n_nets
+        assert n_pads <= N_MAX_PINS, f"stage {stage}: {n_pads} pads > N_MAX_PINS"
+        for p in board.pads:
+            assert 0 <= p.net_id < n_nets, f"stage {stage}: pad has invalid net_id"
+
+        by_pair = {}
+        for net in board.nets:
+            if net.pair_id is not None:
+                by_pair.setdefault(net.pair_id, []).append(net)
+        for pid, nets in by_pair.items():
+            assert len(nets) == 2, f"stage {stage} pair {pid}: expected 2 nets, got {len(nets)}"
+            assert nets[0].trace_width == nets[1].trace_width, \
+                f"stage {stage} pair {pid}: mismatched trace width"
+
+        env = RoutingEnv(lambda r, s=stage: generate_board(s, r), cfg=EnvConfig(),
+                         seed=seed + stage)
+        env.board = board
+        order = env._splice_diff_pairs(sorted(range(n_nets), key=lambda i: board.nets[i].hpwl))
+        pos = {idx: i for i, idx in enumerate(order)}
+        for pid, nets in by_pair.items():
+            i0 = board.nets.index(nets[0])
+            i1 = board.nets.index(nets[1])
+            assert abs(pos[i0] - pos[i1]) == 1, \
+                f"stage {stage} pair {pid}: nets not adjacent in route order"
+        print(f"stage {stage}: pads={n_pads} nets={n_nets} "
+              f"keepouts={len(board.keepouts)} diff_pairs={len(by_pair)}")
+    print("test_generator_smoke OK")
+
+
 if __name__ == "__main__":
     test_obs_shapes()
+    test_generator_smoke()
     test_masked_actions_are_legal()
     print("env: all tests passed")

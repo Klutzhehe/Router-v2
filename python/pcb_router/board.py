@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .config import DesignRules
+from .config import DesignRules, LAYER_ROLE_SIGNAL
 
 KIND_TRACE, KIND_PAD, KIND_VIA, KIND_KEEPOUT = 0, 1, 2, 3
 
@@ -35,6 +35,8 @@ class Net:
     # physics stubs, consumed by the PhysicsEvaluator hook:
     z_required: float = 0.0
     signal_type: int = 0         # 0=signal, 1=power, 2=high-speed
+    trace_width: float = 0.15    # per-net copper width (mm); set by the generator
+    pair_id: Optional[int] = None  # shared id for a differential pair's P/N nets
 
 
 @dataclass
@@ -43,6 +45,10 @@ class Board:
     height: float
     num_layers: int
     rules: DesignRules = field(default_factory=DesignRules)
+    # One role per layer (LAYER_ROLE_SIGNAL / LAYER_ROLE_POWER); defaults to
+    # all-signal (no dedicated planes) until the generator assigns a real
+    # stack-up. Consumed by env.step's stack-up penalty.
+    layer_roles: List[int] = field(default_factory=list)
 
     pads: List[Pad] = field(default_factory=list)
     nets: List[Net] = field(default_factory=list)
@@ -56,6 +62,10 @@ class Board:
     _version: int = 0
     _cache_version: int = -1
     _cache: SimpleNamespace = None
+
+    def __post_init__(self):
+        if not self.layer_roles:
+            self.layer_roles = [LAYER_ROLE_SIGNAL] * self.num_layers
 
     # ------------------------------------------------------------- mutation
     def add_pad(self, x, y, r, layer_lo, layer_hi, net_id) -> int:
