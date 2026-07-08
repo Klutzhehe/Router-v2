@@ -193,6 +193,9 @@ class RoutingEnv:
                         break
                 i = shortcut_j
 
+            # Chamfer corners > 45 degrees
+            simplified_V = self._chamfer_corners(simplified_V, layer, net_id, hw)
+
             for k in range(len(simplified_V) - 1):
                 ax, ay = simplified_V[k]
                 bx, by = simplified_V[k+1]
@@ -200,6 +203,43 @@ class RoutingEnv:
 
         self.board.traces = new_traces
         self.board._version += 1
+
+    def _chamfer_corners(self, V: list[np.ndarray], layer: int, net_id: int, hw: float) -> list[np.ndarray]:
+        if len(V) < 3:
+            return V
+        
+        i = 1
+        while i < len(V) - 1:
+            v0 = V[i-1]
+            v1 = V[i]
+            v2 = V[i+1]
+            
+            d1 = v1 - v0
+            d2 = v2 - v1
+            
+            l1 = np.linalg.norm(d1)
+            l2 = np.linalg.norm(d2)
+            if l1 < 1e-6 or l2 < 1e-6:
+                i += 1
+                continue
+                
+            cos_theta = np.dot(d1, d2) / (l1 * l2)
+            theta = np.arccos(np.clip(cos_theta, -1.0, 1.0))
+            
+            # Turn angle > 45 degrees (pi / 4)
+            if theta > np.pi / 4.0 + 1e-4:
+                # We try to chamfer
+                d = min(0.3, l1 / 2.1, l2 / 2.1)
+                if d > 1e-4:
+                    p1 = v1 - (d1 / l1) * d
+                    p2 = v1 + (d2 / l2) * d
+                    if self.masker.segment_legal(p1, p2, layer, net_id, hw):
+                        V[i] = p1
+                        V.insert(i + 1, p2)
+                        # Don't increment i, so we check the turn at p1 next
+                        continue
+            i += 1
+        return V
 
     def _mean_detour_factor(self) -> float:
         """Average (routed length / HPWL) over completed nets this episode --
