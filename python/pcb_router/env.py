@@ -47,6 +47,7 @@ class RoutingEnv:
         self.masker: ActionMasker = None
         self.head: Optional[RoutingHead] = None
         self.mask: Optional[ActionMask] = None
+        self.last_completion = None
 
     # ------------------------------------------------------------ lifecycle
     def reset(self):
@@ -80,6 +81,7 @@ class RoutingEnv:
         self.cur += 1
         if self.cur >= len(self.order):
             self.done = True
+            self.last_completion = len(self.completed) / len(self.order)
             self.head = None
             self.mask = None
         else:
