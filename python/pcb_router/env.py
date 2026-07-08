@@ -148,12 +148,34 @@ class RoutingEnv:
             self._advance_net(completed=False)
 
     def _simplify_trace(self, net_id: int) -> None:
-        """Greedy polyline simplification: try removing intermediate trace points."""
+        """Greedy polyline simplification: try removing intermediate trace points and vias."""
+        # Step 1: Reconstruct and optimize vias/traces using Dynamic Programming
+        opt_path = self._optimize_vias_and_traces(net_id)
+
+        # Replace board's traces and vias for this net with the optimized ones
+        new_traces = [t for t in self.board.traces if t[6] != net_id]
+        new_vias = [v for v in self.board.vias if v[5] != net_id]
+
+        hw = self.board.nets[net_id].trace_width / 2.0
+
+        for k in range(len(opt_path) - 1):
+            p1 = opt_path[k]
+            p2 = opt_path[k+1]
+            if p1[2] == p2[2]:  # same layer: trace segment
+                new_traces.append((float(p1[0]), float(p1[1]), float(p2[0]), float(p2[1]), hw, p1[2], net_id))
+            else:  # layer change: via transition
+                lo, hi = min(p1[2], p2[2]), max(p1[2], p2[2])
+                new_vias.append((float(p1[0]), float(p1[1]), self.board.rules.via_pad_radius, lo, hi, net_id))
+
+        self.board.traces = new_traces
+        self.board.vias = new_vias
+        self.board._version += 1
+
+        # Step 2: Group the via-optimized traces into contiguous runs and simplify/chamfer them
         net_traces = [t for t in self.board.traces if t[6] == net_id]
         if not net_traces:
             return
 
-        # Group net_traces into contiguous runs on the same layer.
         runs = []
         current_run = []
         for t in net_traces:
@@ -170,7 +192,6 @@ class RoutingEnv:
         if current_run:
             runs.append(current_run)
 
-        # Simplify each run using lookahead check
         new_traces = [t for t in self.board.traces if t[6] != net_id]
         for run in runs:
             hw = run[0][4]
@@ -206,6 +227,152 @@ class RoutingEnv:
 
         self.board.traces = new_traces
         self.board._version += 1
+
+    def _reconstruct_path(self, net_id: int) -> list[tuple[float, float, int]]:
+        net = self.board.nets[net_id]
+        pa = self.board.pads[net.pins[0]]
+        pb = self.board.pads[net.pins[1]]
+        
+        path = [(pa.x, pa.y, pa.layer_lo)]
+        traces = [t for t in self.board.traces if t[6] == net_id]
+        vias = [v for v in self.board.vias if v[5] == net_id]
+        
+        curr = (pa.x, pa.y, pa.layer_lo)
+        visited_traces = set()
+        visited_vias = set()
+        
+        for _ in range(len(traces) + len(vias) + 5):
+            found = False
+            for idx, (ax, ay, bx, by, hw, layer, nid) in enumerate(traces):
+                if idx in visited_traces:
+                    continue
+                if abs(ax - curr[0]) < 1e-6 and abs(ay - curr[1]) < 1e-6 and layer == curr[2]:
+                    curr = (bx, by, layer)
+                    path.append(curr)
+                    visited_traces.add(idx)
+                    found = True
+                    break
+                elif abs(bx - curr[0]) < 1e-6 and abs(by - curr[1]) < 1e-6 and layer == curr[2]:
+                    curr = (ax, ay, layer)
+                    path.append(curr)
+                    visited_traces.add(idx)
+                    found = True
+                    break
+            if found:
+                continue
+                
+            for idx, (vx, vy, vr, lo, hi, nid) in enumerate(vias):
+                if idx in visited_vias:
+                    continue
+                if abs(vx - curr[0]) < 1e-6 and abs(vy - curr[1]) < 1e-6:
+                    if curr[2] == lo:
+                        curr = (vx, vy, hi)
+                        path.append(curr)
+                        visited_vias.add(idx)
+                        found = True
+                        break
+                    elif curr[2] == hi:
+                        curr = (vx, vy, lo)
+                        path.append(curr)
+                        visited_vias.add(idx)
+                        found = True
+                        break
+            if not found:
+                break
+                
+        return path
+
+    def _optimize_vias_and_traces(self, net_id: int) -> list[tuple[float, float, int]]:
+        path = self._reconstruct_path(net_id)
+        if len(path) < 2:
+            return path
+            
+        num_layers = self.board.num_layers
+        hw = self.board.nets[net_id].trace_width / 2.0
+        
+        dp = {}
+        p0 = np.array([path[0][0], path[0][1]])
+        z_start = path[0][2]
+        dp[(0, z_start)] = (0, 0.0, None)
+        
+        for z in range(num_layers):
+            if z != z_start:
+                if self.masker.via_fits(p0, min(z_start, z), max(z_start, z), net_id):
+                    dp[(0, z)] = (1, 0.0, (0, z_start))
+                    
+        N = len(path)
+        for j in range(1, N):
+            pj = np.array([path[j][0], path[j][1]])
+            for zj in range(num_layers):
+                best_state = None
+                best_val = (999999, 999999.0)
+                
+                for i in range(j):
+                    pi = np.array([path[i][0], path[i][1]])
+                    dist = float(np.linalg.norm(pj - pi))
+                    
+                    for zi in range(num_layers):
+                        if (i, zi) not in dp:
+                            continue
+                            
+                        if not self.masker.segment_legal(pi, pj, zj, net_id, hw):
+                            continue
+                            
+                        via_cost = 0
+                        if zi != zj:
+                            if not self.masker.via_fits(pi, min(zi, zj), max(zi, zj), net_id):
+                                continue
+                            via_cost = 1
+                            
+                        prev_vias, prev_len, _ = dp[(i, zi)]
+                        cost_vias = prev_vias + via_cost
+                        cost_len = prev_len + dist
+                        
+                        if (cost_vias, cost_len) < best_val:
+                            best_val = (cost_vias, cost_len)
+                            best_state = (i, zi)
+                            
+                if best_state is not None:
+                    dp[(j, zj)] = (best_val[0], best_val[1], best_state)
+                    
+        net = self.board.nets[net_id]
+        pb = self.board.pads[net.pins[1]]
+        
+        best_term_z = None
+        best_term_val = (999999, 999999.0)
+        for z in range(pb.layer_lo, pb.layer_hi + 1):
+            if (N-1, z) in dp:
+                val = (dp[(N-1, z)][0], dp[(N-1, z)][1])
+                if val < best_term_val:
+                    best_term_val = val
+                    best_term_z = z
+                    
+        if best_term_z is None:
+            for z in range(num_layers):
+                if (N-1, z) in dp:
+                    val = (dp[(N-1, z)][0], dp[(N-1, z)][1])
+                    if val < best_term_val:
+                        best_term_val = val
+                        best_term_z = z
+                        
+        if best_term_z is None:
+            return path
+            
+        opt_path_reversed = []
+        curr_state = (N-1, best_term_z)
+        while curr_state is not None:
+            i, z = curr_state
+            opt_path_reversed.append((path[i][0], path[i][1], z))
+            parent = dp[curr_state][2]
+            curr_state = parent
+            
+        opt_path = list(reversed(opt_path_reversed))
+        
+        final_path = []
+        for p in opt_path:
+            if not final_path or p != final_path[-1]:
+                final_path.append(p)
+        return final_path
 
     def _pull_tight(self, V: list[np.ndarray], layer: int, net_id: int, hw: float) -> list[np.ndarray]:
         if len(V) < 3:
