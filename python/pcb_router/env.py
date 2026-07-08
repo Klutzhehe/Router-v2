@@ -255,12 +255,23 @@ class RoutingEnv:
             
             # Turn angle > 45 degrees (pi / 4)
             if theta > np.pi / 4.0 + 1e-4:
-                # We try to chamfer
-                d = min(0.3, l1 / 2.1, l2 / 2.1)
-                if d > 1e-4:
-                    p1 = v1 - (d1 / l1) * d
-                    p2 = v1 + (d2 / l2) * d
-                    if self.masker.segment_legal(p1, p2, layer, net_id, hw):
+                # Binary search for the maximum legal chamfer distance
+                low = 0.0
+                high = min(l1 / 2.05, l2 / 2.05)
+                if high > 1e-4:
+                    for _bin in range(8):
+                        mid_d = (low + high) / 2.0
+                        p1 = v1 - (d1 / l1) * mid_d
+                        p2 = v1 + (d2 / l2) * mid_d
+                        if self.masker.segment_legal(p1, p2, layer, net_id, hw):
+                            low = mid_d
+                        else:
+                            high = mid_d
+                    
+                    d_opt = low
+                    if d_opt > 1e-4:
+                        p1 = v1 - (d1 / l1) * d_opt
+                        p2 = v1 + (d2 / l2) * d_opt
                         V[i] = p1
                         V.insert(i + 1, p2)
                         # Don't increment i, so we check the turn at p1 next
