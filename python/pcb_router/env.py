@@ -523,6 +523,20 @@ class RoutingEnv:
                     r -= rw.lam_stackup * d / hpwl
             self.net_path.append((self.head.target_x, self.head.target_y, self.head.layer))
             r += rw.C
+
+            # Wire efficiency bonus: reward shorter total length vs the HPWL lower bound.
+            # hpwl/actual_length == 1.0 for a perfect straight route; drops toward 0 for
+            # meandering routes. Via detours count as extra length and are already penalised
+            # by lam2 above, so this doubly discourages via abuse.
+            path = self.net_path
+            actual_length = sum(
+                np.hypot(path[i][0] - path[i-1][0], path[i][1] - path[i-1][1])
+                for i in range(1, len(path))
+            )
+            if actual_length > 1e-9 and hpwl > 1e-9:
+                efficiency = min(1.0, hpwl / actual_length)  # clamp to 1.0 (can't beat HPWL)
+                r += rw.lam_efficiency * efficiency
+
             # self._simplify_trace(self.head.net_id)  # Disabled: AI natively routes smoothly
             self._advance_net(completed=True)
 

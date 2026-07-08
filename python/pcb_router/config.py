@@ -60,12 +60,13 @@ class RewardWeights:
     F: float = 20.0                  # terminal failure penalty (any net unrouted)
     D: float = 50.0                  # DRC safety net (should never fire)
     lam1: float = 1.0                # normalized length (detour factor)
-    lam2: float = 0.5                # via usage
+    lam2: float = 2.0                # via usage (expensive: prefer routing around over abusing vias)
     lam3: float = 5.0                # impedance mismatch   (physics hook)
     lam4: float = 2.0                # differential skew    (physics hook)
     lam5: float = 1.0                # crosstalk            (physics hook)
     lam_turn: float = 0.3            # turn-angle penalty (radians normalized)
     lam_straight: float = 0.05       # bonus for continuing in the same direction
+    lam_efficiency: float = 2.0      # terminal bonus: reward proportional to hpwl/actual_length (1.0 = perfect straight route)
     lam_stackup: float = 0.5         # non-power net dwelling on a POWER-role layer
     beta: float = 1.5                # potential-based shaping weight; MUST stay
                                      # > lam1 or moving toward the target earns
