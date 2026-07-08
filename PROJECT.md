@@ -27,7 +27,7 @@ specification for a later 1:1 performance port (pybind11). The Python
 A binary action mask over a *continuous* action space is mathematically
 ill-posed — you cannot enumerate an uncountable set. The resolution:
 
-- **Direction** is discretized into 64 angle bins → maskable Categorical.
+- **Direction** is discretized into 128 angle bins → maskable Categorical.
   Bins are indexed in a **target-aligned canonical frame**: the masker rolls
   the angle arrays so bin 0 always points at the current target (offset in
   `ActionMask.frame_offset`; the env decodes back to world headings and
@@ -56,7 +56,7 @@ and rip-up/re-route, are roadmap items — §8.)
 flowchart LR
     subgraph ENV["Pillar 1 — Environment (headless CAD engine)"]
         GEN[generator.py<br/>curriculum boards] --> BRD[board.py<br/>pads / traces / vias<br/>continuous polygons]
-        BRD --> MSK[masker.py<br/>swept-disc casts<br/>64-bin action mask]
+        BRD --> MSK[masker.py<br/>swept-disc casts<br/>128-bin action mask]
         BRD --> PHY[PhysicsEvaluator hook<br/>2.5D EM solver API]
         MSK --> ENVV[env.py<br/>step / reset / reward]
         PHY --> ENVV
@@ -82,7 +82,7 @@ flowchart LR
 |---|---|
 | `geometry.py` | Vectorized kernel: ray-vs-disc, ray-vs-capsule first-contact casts, board-outline clipping. Validated against brute-force ray marching. |
 | `board.py` | Continuous-space board state. All copper reduces to **discs** (pads, vias, keep-outs) and **capsules** (thick trace segments). Lists compile to cached flat NumPy arrays. |
-| `masker.py` | Dynamic action masking. Per step: 64 max-legal-distance casts (one AABB broad-phase window + local narrow phase — the "one windowed R-tree query" design), via-fit checks per layer, commit legality. |
+| `masker.py` | Dynamic action masking. Per step: 128 max-legal-distance casts (one AABB broad-phase window + local narrow phase — the "one windowed R-tree query" design), via-fit checks per layer, commit legality. |
 | `env.py` | Gym-style MDP. Reward implements `docs/reward-function.md` exactly. `PhysicsEvaluator` is the 2.5D EM-solver hook (returns zeros until a solver/surrogate plugs in). |
 | `generator.py` | Programmatic curriculum boards, stage 0 → 5 (see §5). |
 
@@ -100,7 +100,7 @@ flowchart LR
 - **Fusion** — `[graph_global | current_net_embed | board_global | head_state]`
   → MLP trunk → four actor heads + critic:
   - type: masked Categorical over {EXTEND, PLACE_VIA, COMMIT_NET}
-  - angle: masked Categorical over 64 bins (target-aligned canonical frame:
+  - angle: masked Categorical over 128 bins (target-aligned canonical frame:
     bin 0 points at the target)
   - distance: Categorical over `DIST_FRACTIONS` of the legal maximum,
     conditioned on the sampled angle bin (autoregressive)

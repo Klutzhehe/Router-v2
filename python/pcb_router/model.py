@@ -103,7 +103,8 @@ class ActorRouter(nn.Module):
         )
 
         self.type_head = nn.Linear(trunk_hidden, N_ACTION_TYPES)
-        self.angle_head = nn.Linear(trunk_hidden, N_ANGLE_BINS)
+        self.heading_emb = nn.Linear(2, 32)
+        self.angle_head = nn.Linear(trunk_hidden + 32, N_ANGLE_BINS)
         # Distance is autoregressive on the chosen angle: dist logits see an
         # embedding of the angle bin actually taken, so the factored policy
         # can express angle-dependent step lengths.
@@ -121,13 +122,18 @@ class ActorRouter(nn.Module):
         head_h = torch.relu(self.head_proj(obs["head_state"]))
         return self.trunk(torch.cat([graph_h, net_h, board_h, head_h], -1))
 
-    def _dists(self, z: torch.Tensor, masks: Dict[str, torch.Tensor]):
+    def _dists(self, z: torch.Tensor, obs: Dict[str, torch.Tensor], masks: Dict[str, torch.Tensor]):
         t_mask = _safe_mask(masks["type"])
         a_mask = _safe_mask(masks["angle"])
         l_mask = _safe_mask(masks["layer"])
+        
+        prev_heading = obs["head_state"][..., 19:21]
+        heading_feat = self.heading_emb(prev_heading)
+        angle_z = torch.cat([z, heading_feat], -1)
+        
         return {
             "type": Categorical(logits=self.type_head(z) + (1 - t_mask) * MASK_FILL),
-            "angle": Categorical(logits=self.angle_head(z) + (1 - a_mask) * MASK_FILL),
+            "angle": Categorical(logits=self.angle_head(angle_z) + (1 - a_mask) * MASK_FILL),
             "layer": Categorical(logits=self.layer_head(z) + (1 - l_mask) * MASK_FILL),
         }
 
@@ -146,7 +152,7 @@ class ActorRouter(nn.Module):
 
     def act(self, obs, masks, deterministic: bool = False) -> Tuple[RouterAction, torch.Tensor]:
         z = self._fuse(obs)
-        d = self._dists(z, masks)
+        d = self._dists(z, obs, masks)
         if deterministic:
             a_type = d["type"].probs.argmax(-1)
             angle = d["angle"].probs.argmax(-1)
@@ -163,7 +169,7 @@ class ActorRouter(nn.Module):
 
     def evaluate_actions(self, obs, masks, action: RouterAction):
         z = self._fuse(obs)
-        d = self._dists(z, masks)
+        d = self._dists(z, obs, masks)
         # Condition on the stored angle -- the same one act() sampled, so
         # act/evaluate log-probs agree exactly.
         dd = self._dist_dist(z, action.angle_bin)

@@ -34,7 +34,7 @@ Tests are plain scripts with main guards (no pytest dependency). They insert
 ## Architecture in one pass
 
 `generator.py` builds a curriculum board → `env.py` runs the MDP: one net at a
-time (ascending HPWL), each step `masker.py` computes which of the 64
+time (ascending HPWL), each step `masker.py` computes which of the 128
 directions / via layers / commit are legal via swept-disc casts in
 `geometry.py` against the disc+capsule obstacle arrays in `board.py` →
 `model.py` (netlist GNN + egocentric PointNet → masked hybrid actor + critic)
@@ -51,7 +51,7 @@ picks an action → `ppo.py`/`train.py` learn from it. All obstacles are discs
    Masking makes illegal actions unsamplable; `info["drc"]` > 0 means fix
    `geometry.py`/`masker.py`. `tests/test_env.py` fuzzes exactly this and
    independently re-checks clearances on the final copper.
-3. **Action-space constants live in `config.py`** (`N_ANGLE_BINS=64`,
+3. **Action-space constants live in `config.py`** (`N_ANGLE_BINS=128`,
    `MAX_LAYERS=12`, `N_ACTION_TYPES=3`) and are consumed by masker, env, and
    model. `cpp/include/pcb/action_masker.hpp` is a *specification for a future
    C++ port* — not built, not linked — and must be kept in sync with config.py

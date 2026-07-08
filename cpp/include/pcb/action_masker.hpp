@@ -62,7 +62,7 @@ struct DesignRules {
 // -------------------------------------------------------------- action mask --
 
 inline constexpr int kNumActionTypes = 3;   // EXTEND, PLACE_VIA, COMMIT_NET
-inline constexpr int kNumAngleBins  = 64;   // 5.625 deg per bin
+inline constexpr int kNumAngleBins  = 128;  // 2.8125 deg per bin
 inline constexpr int kMaxLayers     = 12;
 
 enum class ActionType : std::uint8_t { Extend = 0, PlaceVia = 1, CommitNet = 2 };

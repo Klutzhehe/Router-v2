@@ -27,6 +27,7 @@ r_t \;=\;
 \;-\; \underbrace{\lambda_1 \frac{\Delta\ell_t}{\mathrm{HPWL}_n}}_{\text{normalized length}}
 \;-\; \underbrace{\lambda_2 \cdot \mathbb{1}\!\left[a_t = \mathrm{PLACE\_VIA}\right]}_{\text{via usage}}
 \;-\; \underbrace{\lambda_{\text{turn}} \left(\frac{\Delta\theta_t}{\pi}\right)^{\!2}}_{\text{turn penalty}}
+\;+\; \underbrace{\lambda_{\text{straight}} \max\left(0, 1 - \left(\frac{\Delta\theta_t}{\pi/4}\right)^{\!2}\right)}_{\text{straight-line bonus}}
 \;-\; \underbrace{D \cdot \mathbb{1}\!\left[\text{DRC violation}\right]}_{\text{safety net}}
 \;+\; \underbrace{\beta\left(\Phi(s_{t+1}) - \Phi(s_t)\right)}_{\text{potential shaping (undiscounted, see note)}}
 $$
@@ -162,6 +163,7 @@ $$
 | $\lambda_1$ | $1.0$ | Detour factor of 2 costs 1/10 of a net completion |
 | $\lambda_2$ | $0.5$ | Via ≈ 0.5 detour-units |
 | $\lambda_{\text{turn}}$ | $0.3$ | Quadratic in angle: a 180° reversal costs 0.3, a 90° corner costs 0.075 (1/4, not 1/2), small corrections cost next to nothing |
+| $\lambda_{\text{straight}}$ | $0.05$ | Bonus for continuing in the same direction (reward for $\Delta\theta \approx 0$) |
 | $\lambda_{\text{stackup}}$ | $0.5$ | Non-power net dwelling on a `POWER`-role layer (4+ layer boards only) |
 | $\lambda_3$ | $5.0$ | Per unit of relative impedance error (stubbed at 0 pending a solver) |
 | $\lambda_4$ | $2.0$ | Per mm of intra-pair routed-length mismatch (real, see terminal-reward note) |

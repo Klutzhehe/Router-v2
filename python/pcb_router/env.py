@@ -487,6 +487,11 @@ class RoutingEnv:
             turn_delta = min(turn_delta, 2.0 * np.pi - turn_delta)  # shorter arc
             turn_frac = turn_delta / np.pi  # in [0, 1]
             r -= rw.lam_turn * turn_frac ** 2
+            
+            # Straight-line continuation bonus
+            straight_bonus = rw.lam_straight * max(0.0, 1.0 - (turn_frac * 4.0) ** 2)
+            r += straight_bonus
+            
             self.head.x, self.head.y = nx, ny
             self.head.prev_heading_angle = heading_angle
             self.head.just_placed_via = False
@@ -518,7 +523,7 @@ class RoutingEnv:
                     r -= rw.lam_stackup * d / hpwl
             self.net_path.append((self.head.target_x, self.head.target_y, self.head.layer))
             r += rw.C
-            self._simplify_trace(self.head.net_id)
+            # self._simplify_trace(self.head.net_id)  # Disabled: AI natively routes smoothly
             self._advance_net(completed=True)
 
         else:

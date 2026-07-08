@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 # ---- Action space -----------------------------------------------------------
 N_ACTION_TYPES = 3
 A_EXTEND, A_VIA, A_COMMIT = 0, 1, 2
-N_ANGLE_BINS = 64                    # 5.625 degrees per bin
+N_ANGLE_BINS = 128                   # 2.8125 degrees per bin
 N_DIST_BINS = 5                      # 5 discrete distance steps
 DIST_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1.0] # fractions of max distance
 MAX_LAYERS = 12
@@ -65,6 +65,7 @@ class RewardWeights:
     lam4: float = 2.0                # differential skew    (physics hook)
     lam5: float = 1.0                # crosstalk            (physics hook)
     lam_turn: float = 0.3            # turn-angle penalty (radians normalized)
+    lam_straight: float = 0.05       # bonus for continuing in the same direction
     lam_stackup: float = 0.5         # non-power net dwelling on a POWER-role layer
     beta: float = 1.5                # potential-based shaping weight; MUST stay
                                      # > lam1 or moving toward the target earns

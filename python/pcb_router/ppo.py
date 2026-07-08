@@ -44,7 +44,7 @@ class RolloutBuffer:
         self.obs = {k: torch.zeros((T, *v.shape), dtype=torch.float32)
                     for k, v in obs_spec.items()}
         self.masks = {"type": torch.zeros((T, 3)),
-                      "angle": torch.zeros((T, 64)),
+                      "angle": torch.zeros((T, 128)),
                       "layer": torch.zeros((T, 12))}
         self.a_type = torch.zeros(T, dtype=torch.long)
         self.a_angle = torch.zeros(T, dtype=torch.long)
@@ -292,7 +292,7 @@ class VecRolloutBuffer:
         self._obs = {k: torch.zeros((S, N, *v.shape), dtype=torch.float32)
                     for k, v in obs_spec.items()}
         self._masks = {"type": torch.zeros((S, N, 3)),
-                      "angle": torch.zeros((S, N, 64)),
+                      "angle": torch.zeros((S, N, 128)),
                       "layer": torch.zeros((S, N, 12))}
         self._a_type = torch.zeros((S, N), dtype=torch.long)
         self._a_angle = torch.zeros((S, N), dtype=torch.long)

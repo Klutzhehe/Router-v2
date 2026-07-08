@@ -168,6 +168,13 @@ class ActionMasker:
         target = np.array([head.target_x, head.target_y])
         tp = self.board.pads[head.target_pad]
         d_target = float(np.linalg.norm(target - origin))
+        
+        # Cap the target-directed bin so the max legal step lands exactly at the target.
+        # This naturally scales down the distance fractions when close to the pin,
+        # preventing via 'snowmen' (overlapping the pad off-center).
+        if d_target >= self.rules.min_segment_length and max_dist[0] > d_target:
+            max_dist[0] = d_target
+            
         commit_ok = (
             tp.layer_lo <= head.layer <= tp.layer_hi
             and d_target <= self.rules.commit_snap

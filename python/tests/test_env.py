@@ -183,7 +183,7 @@ def test_obs_shapes(seed=3):
     assert obs["adj"].shape == (64, 64)
     assert obs["points"].shape == (256, 10)
     assert obs["head_state"].shape == (22,)
-    assert masks["type"].shape == (3,) and masks["angle"].shape == (64,)
+    assert masks["type"].shape == (3,) and masks["angle"].shape == (N_ANGLE_BINS,)
     assert masks["layer"].shape == (12,)
     assert masks["type"].any(), "stage-0 start must have a legal action"
     print("test_obs_shapes OK")
