@@ -127,6 +127,7 @@ class RoutingEnv:
             half_width=net.trace_width / 2.0,
             target_x=pb.x, target_y=pb.y, target_pad=net.pins[1],
             prev_heading_angle=init_angle)
+        self.net_path = [(self.head.x, self.head.y, self.head.layer)]
         self.budget = self.cfg.max_steps_per_net
         self.mask = self.masker.compute_mask(self.head, self.cfg.lookahead)
 
@@ -228,62 +229,8 @@ class RoutingEnv:
         self.board.traces = new_traces
         self.board._version += 1
 
-    def _reconstruct_path(self, net_id: int) -> list[tuple[float, float, int]]:
-        net = self.board.nets[net_id]
-        pa = self.board.pads[net.pins[0]]
-        pb = self.board.pads[net.pins[1]]
-        
-        path = [(pa.x, pa.y, pa.layer_lo)]
-        traces = [t for t in self.board.traces if t[6] == net_id]
-        vias = [v for v in self.board.vias if v[5] == net_id]
-        
-        curr = (pa.x, pa.y, pa.layer_lo)
-        visited_traces = set()
-        visited_vias = set()
-        
-        for _ in range(len(traces) + len(vias) + 5):
-            found = False
-            for idx, (ax, ay, bx, by, hw, layer, nid) in enumerate(traces):
-                if idx in visited_traces:
-                    continue
-                if abs(ax - curr[0]) < 1e-6 and abs(ay - curr[1]) < 1e-6 and layer == curr[2]:
-                    curr = (bx, by, layer)
-                    path.append(curr)
-                    visited_traces.add(idx)
-                    found = True
-                    break
-                elif abs(bx - curr[0]) < 1e-6 and abs(by - curr[1]) < 1e-6 and layer == curr[2]:
-                    curr = (ax, ay, layer)
-                    path.append(curr)
-                    visited_traces.add(idx)
-                    found = True
-                    break
-            if found:
-                continue
-                
-            for idx, (vx, vy, vr, lo, hi, nid) in enumerate(vias):
-                if idx in visited_vias:
-                    continue
-                if abs(vx - curr[0]) < 1e-6 and abs(vy - curr[1]) < 1e-6:
-                    if curr[2] == lo:
-                        curr = (vx, vy, hi)
-                        path.append(curr)
-                        visited_vias.add(idx)
-                        found = True
-                        break
-                    elif curr[2] == hi:
-                        curr = (vx, vy, lo)
-                        path.append(curr)
-                        visited_vias.add(idx)
-                        found = True
-                        break
-            if not found:
-                break
-                
-        return path
-
     def _optimize_vias_and_traces(self, net_id: int) -> list[tuple[float, float, int]]:
-        path = self._reconstruct_path(net_id)
+        path = self.net_path
         if len(path) < 2:
             return path
             
@@ -517,6 +464,7 @@ class RoutingEnv:
             self.board.add_trace(self.head.x, self.head.y, nx, ny,
                                  self.head.half_width, self.head.layer,
                                  self.head.net_id)
+            self.net_path.append((nx, ny, self.head.layer))
             # Turn penalty: quadratic in the normalized angle, not linear --
             # a 90 deg corner costs 1/4 of a full reversal, not 1/2, so sharp
             # turns are singled out while gentle curve corrections (small
@@ -542,6 +490,7 @@ class RoutingEnv:
             lo, hi = min(self.head.layer, layer), max(self.head.layer, layer)
             self.board.add_via(self.head.x, self.head.y, lo, hi, self.head.net_id)
             self.head.layer = int(layer)
+            self.net_path.append((self.head.x, self.head.y, self.head.layer))
             self.head.just_placed_via = True
             r -= rw.lam2
 
@@ -556,6 +505,7 @@ class RoutingEnv:
                 r -= rw.lam1 * d / hpwl
                 if net.signal_type != 1 and self.board.layer_roles[self.head.layer] == LAYER_ROLE_POWER:
                     r -= rw.lam_stackup * d / hpwl
+            self.net_path.append((self.head.target_x, self.head.target_y, self.head.layer))
             r += rw.C
             self._simplify_trace(self.head.net_id)
             self._advance_net(completed=True)
