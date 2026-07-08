@@ -210,12 +210,30 @@ def generate_board(stage: int, rng: np.random.Generator,
         net_specs.append({"a": n_a, "b": n_b, "signal_type": 2, "pair_id": pair_id,
                           "width": _HS_TRACE_WIDTH})
 
-    # ---- general pool: pair remaining pads up two at a time ------------------
+    # ---- general pool: pair remaining pads, preferring a sane distance -----
+    # window (3mm .. 60% of the board) so straight-line routing is routable
+    # but non-trivial -- same rule the old floating-pad generator used. Pure
+    # random pairing (no window) can degenerate into near-zero-length nets
+    # (two pads of the same tiny component) or paths that happen to graze a
+    # foreign obstacle, either of which the naive canonical-frame oracle
+    # (tests/test_env.py) chokes on.
     rng.shuffle(slots)
     if len(slots) % 2 == 1:
         slots.pop()
-    for i in range(0, len(slots), 2):
-        net_specs.append({"a": slots[i], "b": slots[i + 1], "signal_type": 0,
+    min_d, max_d = 3.0, 0.6 * spec.size
+    used = [False] * len(slots)
+    for i in range(len(slots)):
+        if used[i]:
+            continue
+        partner = None
+        for j in range(i + 1, len(slots)):
+            if not used[j] and min_d <= np.linalg.norm(slots[i]["xy"] - slots[j]["xy"]) <= max_d:
+                partner = j
+                break
+        if partner is None:  # window unsatisfiable -- take any remaining pad
+            partner = next(j for j in range(i + 1, len(slots)) if not used[j])
+        used[i] = used[partner] = True
+        net_specs.append({"a": slots[i], "b": slots[partner], "signal_type": 0,
                           "pair_id": None, "width": rules.trace_width})
 
     # ---- a few random extra keep-outs for congestion variety -----------------

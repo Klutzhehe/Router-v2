@@ -28,9 +28,15 @@ A binary action mask over a *continuous* action space is mathematically
 ill-posed — you cannot enumerate an uncountable set. The resolution:
 
 - **Direction** is discretized into 64 angle bins → maskable Categorical.
-- **Distance** stays continuous, but the policy emits a **fraction ∈ (0,1)**
-  of the per-bin *maximum legal distance* that the geometry engine computes
-  with a swept-disc cast.
+  Bins are indexed in a **target-aligned canonical frame**: the masker rolls
+  the angle arrays so bin 0 always points at the current target (offset in
+  `ActionMask.frame_offset`; the env decodes back to world headings and
+  rotates the egocentric observation to match). "Head straight for the
+  target" is therefore the same action index in every state — the policy
+  never has to learn atan2 from scratch.
+- **Distance** is a small Categorical over fractions (`DIST_FRACTIONS`) of
+  the per-bin *maximum legal distance* that the geometry engine computes
+  with a swept-disc cast, conditioned on the sampled angle bin.
 
 Every sampled action is therefore legal **by construction**. The DRC penalty
 in the reward exists only as a float-tolerance assertion; in testing it fires
@@ -94,8 +100,10 @@ flowchart LR
 - **Fusion** — `[graph_global | current_net_embed | board_global | head_state]`
   → MLP trunk → four actor heads + critic:
   - type: masked Categorical over {EXTEND, PLACE_VIA, COMMIT_NET}
-  - angle: masked Categorical over 64 bins
-  - distance: **Beta distribution** over the legal fraction (naturally bounded)
+  - angle: masked Categorical over 64 bins (target-aligned canonical frame:
+    bin 0 points at the target)
+  - distance: Categorical over `DIST_FRACTIONS` of the legal maximum,
+    conditioned on the sampled angle bin (autoregressive)
   - layer: masked Categorical over via targets
 - Masking: `logits + (1 − mask)·(−1e9)` before sampling; joint log-prob is the
   sum of the four components (standard parameterized-action PPO).

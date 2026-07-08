@@ -43,9 +43,10 @@ picks an action → `ppo.py`/`train.py` learn from it. All obstacles are discs
 
 ## Invariants (the things that break silently)
 
-1. **Legal-by-construction distances.** The actor emits a *fraction* ∈ (0,1);
-   `env.py` maps it to `[min_segment_length, mask.max_distance[bin]]`. Never
-   interpret the policy's distance output as absolute millimetres.
+1. **Legal-by-construction distances.** The actor emits a distance *bin*;
+   `env.py` maps `DIST_FRACTIONS[bin]` into `[min_segment_length,
+   mask.max_distance[angle]]`. Never interpret the policy's distance output
+   as absolute millimetres.
 2. **A DRC flag during training is a geometry bug, not a tuning problem.**
    Masking makes illegal actions unsamplable; `info["drc"]` > 0 means fix
    `geometry.py`/`masker.py`. `tests/test_env.py` fuzzes exactly this and
@@ -85,7 +86,12 @@ picks an action → `ppo.py`/`train.py` learn from it. All obstacles are discs
 
 - Units: millimetres, float64 in the engine, float32 in observations.
   Layer 0 = top copper; vias span an inclusive `[layer_lo, layer_hi]`.
-- Angle bin i points at heading `2π·i/64`; indexing shared by masker, env
-  decoder, and actor head.
+- Angle actions live in a **target-aligned canonical frame**. World bin i
+  points at heading `2π·i/64`; `masker.py` rolls the angle arrays by
+  `ActionMask.frame_offset` so canonical bin 0 points at the current target,
+  `env.step` decodes world bin = `(bin + frame_offset) % 64`, and `env._obs`
+  rotates the point cloud and head-state direction by the same *quantized*
+  angle. Never mix canonical and world bin indices; `tests/test_env.py`
+  asserts the alignment invariant every fuzz step.
 - The env is deterministic given the board; all randomness lives in the
   generator and the policy (enables search-based inference later).

@@ -67,11 +67,19 @@ inline constexpr int kMaxLayers     = 12;
 
 enum class ActionType : std::uint8_t { Extend = 0, PlaceVia = 1, CommitNet = 2 };
 
+// NOTE (target-aligned canonical frame -- must match masker.py): angle_mask
+// and max_distance are emitted ROLLED so canonical bin 0 points at the
+// head->target direction. frame_offset = round(atan2(dy, dx) * kNumAngleBins
+// / 2pi) mod kNumAngleBins; canonical bin i = world bin (i + frame_offset) %
+// kNumAngleBins, and the env decodes EXTEND headings with the same offset.
+// A port that skips the roll (or the matching observation rotation) breaks
+// trained policies silently.
 struct ActionMask {
   std::array<std::uint8_t, kNumActionTypes> type_mask{};   // 1 = legal
-  std::array<std::uint8_t, kNumAngleBins>  angle_mask{};   // per-direction
-  std::array<double,       kNumAngleBins>  max_distance{}; // mm legal per bin
+  std::array<std::uint8_t, kNumAngleBins>  angle_mask{};   // per-direction (canonical)
+  std::array<double,       kNumAngleBins>  max_distance{}; // mm legal per bin (canonical)
   std::array<std::uint8_t, kMaxLayers>     layer_mask{};   // legal via targets
+  int frame_offset = 0;   // world bin the canonical frame is rotated by
 };
 
 // Current state of the net being routed.

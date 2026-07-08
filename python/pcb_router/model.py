@@ -8,8 +8,13 @@ Fusion         : concat -> MLP trunk -> masked hybrid actor + scalar critic.
 
 Action tuple (contract shared with masker.py / config.py):
     action_type : Categorical over {EXTEND, PLACE_VIA, COMMIT_NET}
-    angle_bin   : Categorical over N_ANGLE_BINS directions (masked)
-    dist_frac   : Categorical over N_DIST_BINS distance steps (fractions)
+    angle_bin   : Categorical over N_ANGLE_BINS directions (masked; indices
+                  are in the target-aligned canonical frame -- bin 0 points
+                  at the target, see masker.py)
+    dist_frac   : Categorical over N_DIST_BINS distance steps, conditioned on
+                  the sampled angle_bin (autoregressive -- step length may
+                  depend on direction, e.g. "full step at the target,
+                  shorter when skirting an obstacle")
     layer       : Categorical over MAX_LAYERS via targets (masked)
 """
 
@@ -99,7 +104,11 @@ class ActorRouter(nn.Module):
 
         self.type_head = nn.Linear(trunk_hidden, N_ACTION_TYPES)
         self.angle_head = nn.Linear(trunk_hidden, N_ANGLE_BINS)
-        self.dist_head = nn.Linear(trunk_hidden, N_DIST_BINS)
+        # Distance is autoregressive on the chosen angle: dist logits see an
+        # embedding of the angle bin actually taken, so the factored policy
+        # can express angle-dependent step lengths.
+        self.angle_emb = nn.Embedding(N_ANGLE_BINS, 32)
+        self.dist_head = nn.Linear(trunk_hidden + 32, N_DIST_BINS)
         self.layer_head = nn.Linear(trunk_hidden, MAX_LAYERS)
 
     def _fuse(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -119,45 +128,52 @@ class ActorRouter(nn.Module):
         return {
             "type": Categorical(logits=self.type_head(z) + (1 - t_mask) * MASK_FILL),
             "angle": Categorical(logits=self.angle_head(z) + (1 - a_mask) * MASK_FILL),
-            "dist": Categorical(logits=self.dist_head(z)),
             "layer": Categorical(logits=self.layer_head(z) + (1 - l_mask) * MASK_FILL),
         }
 
-    def _joint_logp(self, d, a: RouterAction) -> torch.Tensor:
+    def _dist_dist(self, z: torch.Tensor, angle_bin: torch.Tensor) -> Categorical:
+        """Distance distribution conditioned on the angle actually taken."""
+        return Categorical(logits=self.dist_head(
+            torch.cat([z, self.angle_emb(angle_bin)], -1)))
+
+    def _joint_logp(self, d, dd: Categorical, a: RouterAction) -> torch.Tensor:
         is_extend = (a.action_type == A_EXTEND).float()
         is_via = (a.action_type == A_VIA).float()
         return (d["type"].log_prob(a.action_type)
                 + is_extend * (d["angle"].log_prob(a.angle_bin)
-                               + d["dist"].log_prob(a.dist_frac))
+                               + dd.log_prob(a.dist_frac))
                 + is_via * d["layer"].log_prob(a.layer))
 
     def act(self, obs, masks, deterministic: bool = False) -> Tuple[RouterAction, torch.Tensor]:
         z = self._fuse(obs)
         d = self._dists(z, masks)
         if deterministic:
-            a = RouterAction(
-                action_type=d["type"].probs.argmax(-1),
-                angle_bin=d["angle"].probs.argmax(-1),
-                dist_frac=d["dist"].probs.argmax(-1),
-                layer=d["layer"].probs.argmax(-1),
-            )
+            a_type = d["type"].probs.argmax(-1)
+            angle = d["angle"].probs.argmax(-1)
+            layer = d["layer"].probs.argmax(-1)
         else:
-            a = RouterAction(
-                action_type=d["type"].sample(),
-                angle_bin=d["angle"].sample(),
-                dist_frac=d["dist"].sample(),
-                layer=d["layer"].sample(),
-            )
-        return a, self._joint_logp(d, a)
+            a_type = d["type"].sample()
+            angle = d["angle"].sample()
+            layer = d["layer"].sample()
+        dd = self._dist_dist(z, angle)
+        dist = dd.probs.argmax(-1) if deterministic else dd.sample()
+        a = RouterAction(action_type=a_type, angle_bin=angle,
+                         dist_frac=dist, layer=layer)
+        return a, self._joint_logp(d, dd, a)
 
     def evaluate_actions(self, obs, masks, action: RouterAction):
         z = self._fuse(obs)
         d = self._dists(z, masks)
+        # Condition on the stored angle -- the same one act() sampled, so
+        # act/evaluate log-probs agree exactly.
+        dd = self._dist_dist(z, action.angle_bin)
         p = d["type"].probs
+        # dd.entropy() is H(dist | taken angle): a per-sample estimate of the
+        # conditional entropy, the standard choice for autoregressive heads.
         entropy = (d["type"].entropy()
-                   + p[..., A_EXTEND] * (d["angle"].entropy() + d["dist"].entropy())
+                   + p[..., A_EXTEND] * (d["angle"].entropy() + dd.entropy())
                    + p[..., A_VIA] * d["layer"].entropy())
-        return self._joint_logp(d, action), entropy
+        return self._joint_logp(d, dd, action), entropy
 
 
 class CriticRouter(nn.Module):

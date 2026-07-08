@@ -415,6 +415,14 @@ class RoutingEnv:
 
             dist = np.concatenate([c[0] for c in cols])
             dxy = np.concatenate([c[1] for c in cols])
+            # Rotate offsets into the target-aligned canonical frame so the
+            # cloud agrees with the rolled angle mask (canonical bin 0 = at
+            # the target). Must use the SAME quantized offset the masker
+            # rolled by, not the exact atan2 angle, or the observation and
+            # the action space would disagree by up to half a bin.
+            th = self.mask.frame_offset * (2.0 * np.pi / N_ANGLE_BINS)
+            c_, s_ = np.cos(th), np.sin(th)
+            dxy = dxy @ np.array([[c_, -s_], [s_, c_]])
             llo = np.concatenate([c[2] for c in cols])
             lhi = np.concatenate([c[3] for c in cols])
             kind = np.concatenate([c[4] for c in cols]).astype(int)
@@ -438,9 +446,16 @@ class RoutingEnv:
             net = b.nets[cur_net]
             dx, dy = self.head.target_x - self.head.x, self.head.target_y - self.head.y
             d = np.hypot(dx, dy)
+            # Same canonical-frame rotation as the point cloud: dxc ~ d (the
+            # remaining distance), dyc ~ the sub-bin residual -- the target
+            # direction itself is baked into the frame, not a feature the
+            # network has to decode.
+            th = self.mask.frame_offset * (2.0 * np.pi / N_ANGLE_BINS)
+            c_, s_ = np.cos(th), np.sin(th)
+            dxc, dyc = dx * c_ + dy * s_, -dx * s_ + dy * c_
             head_state[0:2] = [self.head.x / b.width, self.head.y / b.height]
-            head_state[2] = np.clip(dx / net.hpwl, -2, 2) / 2.0
-            head_state[3] = np.clip(dy / net.hpwl, -2, 2) / 2.0
+            head_state[2] = np.clip(dxc / net.hpwl, -2, 2) / 2.0
+            head_state[3] = np.clip(dyc / net.hpwl, -2, 2) / 2.0
             head_state[4] = min(d / net.hpwl, 2.0) / 2.0
             head_state[5 + self.head.layer] = 1.0
             head_state[17] = len(self.completed) / max(len(b.nets), 1)
