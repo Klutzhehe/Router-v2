@@ -10,11 +10,11 @@ Action tuple (contract shared with masker.py / config.py):
     action_type : Categorical over {EXTEND, PLACE_VIA, COMMIT_NET}
     angle_bin   : Categorical over N_ANGLE_BINS directions (masked; indices
                   are in the target-aligned canonical frame -- bin 0 points
-                  at the target, see masker.py)
-    dist_frac   : Categorical over N_DIST_BINS distance steps, conditioned on
-                  the sampled angle_bin (autoregressive -- step length may
-                  depend on direction, e.g. "full step at the target,
-                  shorter when skirting an obstacle")
+                  at the target, see masker.py). N_ANGLE_BINS = 8 (45 deg each).
+    dist_frac   : Continuous in [0, 1] from a Beta(alpha, beta) distribution,
+                  scaled to [min_segment_length, max_distance[bin]] in env.step.
+                  Beta gives a bounded, unimodal continuous distribution without
+                  tanh squashing; entropy is well-defined and differentiable.
     layer       : Categorical over MAX_LAYERS via targets (masked)
 """
 
@@ -24,19 +24,21 @@ from typing import Dict, NamedTuple, Tuple
 
 import torch
 import torch.nn as nn
-from torch.distributions import Categorical
+import torch.nn.functional as F
+from torch.distributions import Beta, Categorical
 
 from .config import (A_EXTEND, A_VIA, HEAD_FEAT_DIM, MAX_LAYERS,
                      N_ACTION_TYPES, N_ANGLE_BINS, NODE_FEAT_DIM,
-                     POINT_FEAT_DIM, N_DIST_BINS)
+                     POINT_FEAT_DIM)
 
 MASK_FILL = -1e9
+_BETA_MIN = 0.5   # minimum alpha/beta concentration to avoid degenerate distributions
 
 
 class RouterAction(NamedTuple):
     action_type: torch.Tensor   # (B,) long
     angle_bin: torch.Tensor     # (B,) long
-    dist_frac: torch.Tensor     # (B,) long (bin index)
+    dist_frac: torch.Tensor     # (B,) float32  -- continuous sample in [0, 1]
     layer: torch.Tensor         # (B,) long
 
 
@@ -105,11 +107,15 @@ class ActorRouter(nn.Module):
         self.type_head = nn.Linear(trunk_hidden, N_ACTION_TYPES)
         self.heading_emb = nn.Linear(2, 32)
         self.angle_head = nn.Linear(trunk_hidden + 32, N_ANGLE_BINS)
-        # Distance is autoregressive on the chosen angle: dist logits see an
-        # embedding of the angle bin actually taken, so the factored policy
-        # can express angle-dependent step lengths.
+
+        # Continuous distance head: outputs log(alpha) and log(beta) for
+        # Beta(alpha, beta) in [0, 1]. Conditioned on the chosen angle bin
+        # via an embedding (same autoregressive structure as before), so the
+        # agent can express direction-dependent step lengths.
         self.angle_emb = nn.Embedding(N_ANGLE_BINS, 32)
-        self.dist_head = nn.Linear(trunk_hidden + 32, N_DIST_BINS)
+        self.dist_alpha_head = nn.Linear(trunk_hidden + 32, 1)  # -> log(alpha)
+        self.dist_beta_head  = nn.Linear(trunk_hidden + 32, 1)  # -> log(beta)
+
         self.layer_head = nn.Linear(trunk_hidden, MAX_LAYERS)
 
     def _fuse(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -122,32 +128,40 @@ class ActorRouter(nn.Module):
         head_h = torch.relu(self.head_proj(obs["head_state"]))
         return self.trunk(torch.cat([graph_h, net_h, board_h, head_h], -1))
 
+    def _dist_dist(self, z: torch.Tensor, angle_bin: torch.Tensor) -> Beta:
+        """Beta(alpha, beta) conditioned on the angle actually taken.
+        softplus + _BETA_MIN ensures alpha, beta > 0.5 so the distribution
+        stays unimodal and entropy stays finite (degenerate Beta at 0 or 1
+        would produce -inf log-probs during PPO evaluation)."""
+        ae = self.angle_emb(angle_bin)
+        z_dist = torch.cat([z, ae], -1)
+        alpha = F.softplus(self.dist_alpha_head(z_dist).squeeze(-1)) + _BETA_MIN
+        beta  = F.softplus(self.dist_beta_head(z_dist).squeeze(-1))  + _BETA_MIN
+        return Beta(alpha, beta)
+
     def _dists(self, z: torch.Tensor, obs: Dict[str, torch.Tensor], masks: Dict[str, torch.Tensor]):
         t_mask = _safe_mask(masks["type"])
         a_mask = _safe_mask(masks["angle"])
         l_mask = _safe_mask(masks["layer"])
-        
+
         prev_heading = obs["head_state"][..., 19:21]
         heading_feat = self.heading_emb(prev_heading)
         angle_z = torch.cat([z, heading_feat], -1)
-        
+
         return {
-            "type": Categorical(logits=self.type_head(z) + (1 - t_mask) * MASK_FILL),
+            "type":  Categorical(logits=self.type_head(z) + (1 - t_mask) * MASK_FILL),
             "angle": Categorical(logits=self.angle_head(angle_z) + (1 - a_mask) * MASK_FILL),
             "layer": Categorical(logits=self.layer_head(z) + (1 - l_mask) * MASK_FILL),
         }
 
-    def _dist_dist(self, z: torch.Tensor, angle_bin: torch.Tensor) -> Categorical:
-        """Distance distribution conditioned on the angle actually taken."""
-        return Categorical(logits=self.dist_head(
-            torch.cat([z, self.angle_emb(angle_bin)], -1)))
-
-    def _joint_logp(self, d, dd: Categorical, a: RouterAction) -> torch.Tensor:
+    def _joint_logp(self, d, dd: Beta, a: RouterAction) -> torch.Tensor:
         is_extend = (a.action_type == A_EXTEND).float()
-        is_via = (a.action_type == A_VIA).float()
+        is_via    = (a.action_type == A_VIA).float()
+        # Clamp dist_frac strictly inside (0,1) to avoid Beta log_prob = -inf
+        dist_clamped = a.dist_frac.clamp(1e-6, 1.0 - 1e-6)
         return (d["type"].log_prob(a.action_type)
                 + is_extend * (d["angle"].log_prob(a.angle_bin)
-                               + dd.log_prob(a.dist_frac))
+                               + dd.log_prob(dist_clamped))
                 + is_via * d["layer"].log_prob(a.layer))
 
     def act(self, obs, masks, deterministic: bool = False) -> Tuple[RouterAction, torch.Tensor]:
@@ -155,14 +169,24 @@ class ActorRouter(nn.Module):
         d = self._dists(z, obs, masks)
         if deterministic:
             a_type = d["type"].probs.argmax(-1)
-            angle = d["angle"].probs.argmax(-1)
-            layer = d["layer"].probs.argmax(-1)
+            angle  = d["angle"].probs.argmax(-1)
+            layer  = d["layer"].probs.argmax(-1)
         else:
             a_type = d["type"].sample()
-            angle = d["angle"].sample()
-            layer = d["layer"].sample()
+            angle  = d["angle"].sample()
+            layer  = d["layer"].sample()
         dd = self._dist_dist(z, angle)
-        dist = dd.probs.argmax(-1) if deterministic else dd.sample()
+        # Mode for deterministic (Beta mode = (alpha-1)/(alpha+beta-2) when
+        # alpha,beta>1; fall back to mean otherwise); sample otherwise.
+        if deterministic:
+            alpha, beta = dd.concentration1, dd.concentration0
+            # mode is valid only when alpha>1 and beta>1
+            mode_ok = (alpha > 1) & (beta > 1)
+            dist = torch.where(mode_ok,
+                               (alpha - 1) / (alpha + beta - 2),
+                               dd.mean)
+        else:
+            dist = dd.rsample()  # reparameterized — keeps gradients for future use
         a = RouterAction(action_type=a_type, angle_bin=angle,
                          dist_frac=dist, layer=layer)
         return a, self._joint_logp(d, dd, a)
@@ -170,15 +194,13 @@ class ActorRouter(nn.Module):
     def evaluate_actions(self, obs, masks, action: RouterAction):
         z = self._fuse(obs)
         d = self._dists(z, obs, masks)
-        # Condition on the stored angle -- the same one act() sampled, so
-        # act/evaluate log-probs agree exactly.
+        # Condition on the stored angle -- same as act(), so log-probs agree.
         dd = self._dist_dist(z, action.angle_bin)
         p = d["type"].probs
-        # dd.entropy() is H(dist | taken angle): a per-sample estimate of the
-        # conditional entropy, the standard choice for autoregressive heads.
+        # Beta entropy is the continuous analogue of Categorical entropy here.
         entropy = (d["type"].entropy()
                    + p[..., A_EXTEND] * (d["angle"].entropy() + dd.entropy())
-                   + p[..., A_VIA] * d["layer"].entropy())
+                   + p[..., A_VIA]    * d["layer"].entropy())
         return self._joint_logp(d, dd, action), entropy
 
 

@@ -16,7 +16,7 @@ from . import geometry as geo
 from .board import Board, KIND_PAD, KIND_KEEPOUT
 from .config import (A_COMMIT, A_EXTEND, A_VIA, EnvConfig, HEAD_FEAT_DIM,
                      LAYER_ROLE_POWER, MAX_LAYERS, N_ANGLE_BINS, N_MAX_PINS,
-                     NODE_FEAT_DIM, P_MAX, POINT_FEAT_DIM, DIST_FRACTIONS)
+                     NODE_FEAT_DIM, P_MAX, POINT_FEAT_DIM)
 from .masker import ActionMask, ActionMasker, RoutingHead
 
 _DIRS = geo.unit_dirs(N_ANGLE_BINS)
@@ -464,9 +464,10 @@ class RoutingEnv:
         if a_type == A_EXTEND and self.mask.type_mask[A_EXTEND] \
                 and self.mask.angle_mask[angle_bin]:
             dmax = self.mask.max_distance[angle_bin]
-            dist_idx = int(np.clip(dist_frac, 0, len(DIST_FRACTIONS) - 1))
-            dist_val = DIST_FRACTIONS[dist_idx]
-            dist = rules.min_segment_length + dist_val * (dmax - rules.min_segment_length)
+            # dist_frac is a continuous Beta sample in [0, 1]; scale to
+            # [min_segment_length, dmax].  Clamp for float robustness.
+            dist_val = float(np.clip(dist_frac, 0.0, 1.0))
+            dist = rules.min_segment_length + dist_val * max(dmax - rules.min_segment_length, 0.0)
             # angle_bin indexes the target-aligned canonical frame; recover world heading
             world_bin = (angle_bin + self.mask.frame_offset) % N_ANGLE_BINS
             heading_angle = 2.0 * np.pi * world_bin / N_ANGLE_BINS

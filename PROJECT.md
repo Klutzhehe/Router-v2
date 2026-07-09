@@ -27,16 +27,20 @@ specification for a later 1:1 performance port (pybind11). The Python
 A binary action mask over a *continuous* action space is mathematically
 ill-posed — you cannot enumerate an uncountable set. The resolution:
 
-- **Direction** is discretized into 128 angle bins → maskable Categorical.
-  Bins are indexed in a **target-aligned canonical frame**: the masker rolls
-  the angle arrays so bin 0 always points at the current target (offset in
-  `ActionMask.frame_offset`; the env decodes back to world headings and
-  rotates the egocentric observation to match). "Head straight for the
-  target" is therefore the same action index in every state — the policy
-  never has to learn atan2 from scratch.
-- **Distance** is a small Categorical over fractions (`DIST_FRACTIONS`) of
-  the per-bin *maximum legal distance* that the geometry engine computes
-  with a swept-disc cast, conditioned on the sampled angle bin.
+- **Direction** is discretized into **8 angle bins** (0°, 45°, 90°, 135°, 180°, 225°, 270°,
+  315° — the 4 cardinal + 4 diagonal directions). Bins are indexed in a
+  **target-aligned canonical frame**: the masker rolls the angle arrays so bin
+  0 always points at the current target (offset in `ActionMask.frame_offset`;
+  the env decodes back to world headings and rotates the egocentric observation
+  to match). "Head straight for the target" is therefore the same action index
+  in every state — the policy never has to learn atan2 from scratch.
+- **Distance** is **continuous**: a **Beta(α, β)** distribution sampled in
+  [0, 1] and scaled to [min_segment_length, max_legal_distance[bin]]. The
+  Beta is bounded by construction (no tanh squashing needed), stays unimodal
+  when α, β > 0.5 (enforced by the model), and has a well-defined, closed-form
+  entropy for PPO's entropy bonus. The agent can express any fraction of the
+  available reach per direction, including direction-dependent step lengths via
+  the autoregressive angle-embedding conditioning.
 
 Every sampled action is therefore legal **by construction**. The DRC penalty
 in the reward exists only as a float-tolerance assertion; in testing it fires
@@ -174,14 +178,16 @@ that are legal to route through but cost `RewardWeights.lam_stackup` if a
 non-power net dwells there — this, not just adding more layers, is what
 curbs "hop to an empty layer to dodge congestion."
 
-| Stage | Layers | Stack-up | Board | ~Nets | Diff pairs |
-|---|---|---|---|---|---|
-| 0 | 2 | none | 20×20 mm | 3 | — |
-| 1 | 2 | none | 25×25 mm | 6 | — |
-| 2 | 2 | none (bottom-mount pads force vias) | 28×28 mm | 9 | — |
-| 3 | 4 | 1 dedicated power/gnd layer | 32×32 mm | 16 | 1 |
-| 4 | 6 | 2 dedicated power/gnd layers | 38×38 mm | 25 | 2 |
-| 5 | 6 (cap) | 2 dedicated power/gnd layers | 45×45 mm | 27 | 2 |
+| Stage | Layers | Stack-up | Board | ~Nets | Diff pairs | Notes |
+|---|---|---|---|---|---|---|
+| **0** | 2 | none | 15×15 mm | **1** | — | Bare pad pairs; pure movement fundamentals |
+| **1** | 2 | none | 20×20 mm | **3** | — | Bare pad pairs; multi-net obstacle navigation |
+| 2 | 2 | none | 20×20 mm | ~3 | — | |
+| 3 | 2 | none | 25×25 mm | ~6 | — | |
+| 4 | 2 | none (bottom-mount pads force vias) | 28×28 mm | ~9 | — | |
+| 5 | 4 | 1 dedicated power/gnd layer | 32×32 mm | ~16 | 1 | |
+| 6 | 6 | 2 dedicated power/gnd layers | 38×38 mm | ~25 | 2 | |
+| 7 | 6 (cap) | 2 dedicated power/gnd layers | 45×45 mm | ~27 | 2 | |
 
 The layer cap is 6 (was 12) — deliberately, so the curriculum stays focused
 on same-layer congestion-solving rather than letting the agent dodge

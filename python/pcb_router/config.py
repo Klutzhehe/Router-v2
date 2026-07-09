@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 # ---- Action space -----------------------------------------------------------
 N_ACTION_TYPES = 3
 A_EXTEND, A_VIA, A_COMMIT = 0, 1, 2
-N_ANGLE_BINS = 128                   # 2.8125 degrees per bin
-N_DIST_BINS = 5                      # 5 discrete distance steps
-DIST_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1.0] # fractions of max distance
+N_ANGLE_BINS = 8                     # 8 directions: cardinal + diagonal (45° per bin)
+# Distance is now continuous: Beta(alpha, beta) sampled in [0, 1] and scaled
+# to [min_segment_length, max_distance[bin]]. N_DIST_BINS / DIST_FRACTIONS removed.
 MAX_LAYERS = 12
 
 # ---- Fixed observation dims (padded for trivial batching) -------------------

@@ -41,7 +41,7 @@ import torch
 
 from .config import EnvConfig
 from .env import RoutingEnv, VecRoutingEnv
-from .generator import STAGES, generate_board
+from .generator import STAGES, N_STAGES, generate_board
 from .model import DualStreamRouter
 from .ppo import (PPO, PPOConfig, collect_rollout, collect_rollout_vec,
                   load_checkpoint, save_checkpoint)
@@ -122,7 +122,7 @@ def main():
     carried = (None, None)
     updates_since_save = 0
     print(f"device={device} stage={stage} n_envs={args.n_envs} "
-          f"({STAGES[min(stage, len(STAGES)-1)].layers} layers)", flush=True)
+          f"({(STAGES[min(stage - 2, len(STAGES)-1)].layers if stage >= 2 else 2)} layers)", flush=True)
 
     while steps_done < args.total_steps:
         t0 = time.time()
@@ -187,7 +187,7 @@ def main():
                             consecutive_hits=consecutive_hits, detour_factors=detour_factors)
             updates_since_save = 0
 
-        if consecutive_hits >= args.advance_streak and stage < len(STAGES) - 1:
+        if consecutive_hits >= args.advance_streak and stage < N_STAGES - 1:
             stage += 1
             print(f"=== curriculum advance -> stage {stage} "
                   f"(after {args.advance_streak} consecutive qualifying updates) ===", flush=True)

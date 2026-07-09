@@ -39,6 +39,18 @@ class StageSpec:
     commit_snap: float = 1.0
 
 
+# ---- Stage 0 / 1: exact-net-count bare-pad warm-up -------------------------
+# These two stages are intentionally tiny and use bare pad pairs (no footprint
+# library) so the generator guarantees exactly the target net count. The agent
+# learns single-net routing (stage 0) and multi-net navigation (stage 1)
+# before encountering the more complex footprint-based boards.
+_BARE_STAGE_SPECS = [
+    # (n_nets, board_size_mm, commit_snap)
+    (1, 15.0, 3.0),   # stage 0: 1 net, trivially small board
+    (3, 20.0, 2.5),   # stage 1: 3 nets, still small, some obstacle interaction
+]
+
+# Component-based stages (start at index 2 in the curriculum)
 STAGES = [
     StageSpec(layers=2, size=20.0,
               components={"PASSIVE_SMALL": 3},
@@ -63,6 +75,9 @@ STAGES = [
               n_diff_pairs=2, extra_keepouts=4, bottom_mount_prob=0.5),
 ]
 
+# Total curriculum length (bare-pad stages + component stages)
+N_STAGES = len(_BARE_STAGE_SPECS) + len(STAGES)
+
 
 def stackup_roles(num_layers: int) -> List[int]:
     """Assign each layer a role. Mirrors real stack-ups: 2-layer boards have
@@ -86,8 +101,65 @@ _DIFF_PITCH = 0.30         # perpendicular P/N spacing (mm)
 _HS_PAD_R = 0.3            # bare diff-pair pad radius (not tied to a footprint)
 
 
+def generate_bare_pad_board(n_nets: int, size: float, commit_snap: float,
+                             rng: np.random.Generator,
+                             rules: DesignRules | None = None) -> Board:
+    """Generate a 2-layer board with exactly n_nets bare pad pairs.
+
+    Pads are placed as random point pairs with a sane separation window
+    (3 mm .. 60% of board edge) — the same heuristic as the old floating-pad
+    generator. No footprint library, no keepouts, no diff pairs: pure
+    movement fundamentals for the early warm-up stages.
+    """
+    rules = rules or DesignRules(commit_snap=commit_snap)
+    board = Board(width=size, height=size, num_layers=2,
+                  rules=rules, layer_roles=[LAYER_ROLE_SIGNAL, LAYER_ROLE_SIGNAL])
+
+    margin = 1.5 + rules.board_clearance
+    pad_r = rules.trace_width  # small pad, just big enough to land on
+    min_d, max_d = 3.0, 0.6 * size
+    nets_placed = 0
+
+    for _ in range(n_nets * 500):  # retry budget
+        if nets_placed >= n_nets:
+            break
+        pa = rng.uniform(margin + pad_r, size - margin - pad_r, size=2)
+        for _try in range(200):
+            pb = rng.uniform(margin + pad_r, size - margin - pad_r, size=2)
+            if min_d <= float(np.linalg.norm(pb - pa)) <= max_d:
+                break
+        else:
+            continue  # couldn't find a valid partner — retry outer loop
+        ia = board.add_pad(pa[0], pa[1], pad_r, 0, 0, net_id=nets_placed)
+        ib = board.add_pad(pb[0], pb[1], pad_r, 0, 0, net_id=nets_placed)
+        board.add_net(ia, ib, signal_type=0, pair_id=None,
+                      trace_width=rules.trace_width)
+        nets_placed += 1
+
+    if nets_placed < n_nets:
+        raise RuntimeError(
+            f"generate_bare_pad_board: only placed {nets_placed}/{n_nets} nets "
+            f"on a {size}x{size} mm board (margin too tight or board too small)"
+        )
+    return board
+
+
 def generate_board(stage: int, rng: np.random.Generator,
                    rules: DesignRules | None = None) -> Board:
+    """Dispatch to the appropriate generator for the given curriculum stage.
+
+    Stages 0 and 1 are bare-pad warm-up boards with exactly 1 and 3 nets
+    respectively. Stages 2+ are the original component-based boards.
+    """
+    n_bare = len(_BARE_STAGE_SPECS)
+    if stage < n_bare:
+        n_nets, size, snap = _BARE_STAGE_SPECS[stage]
+        return generate_bare_pad_board(n_nets, size, snap, rng, rules)
+    return _generate_component_board(stage - n_bare, rng, rules)
+
+
+def _generate_component_board(stage: int, rng: np.random.Generator,
+                              rules: DesignRules | None = None) -> Board:
     spec = STAGES[min(stage, len(STAGES) - 1)]
     rules = rules or DesignRules(commit_snap=spec.commit_snap)
     board = Board(width=spec.size, height=spec.size, num_layers=spec.layers,

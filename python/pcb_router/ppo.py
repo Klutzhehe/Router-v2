@@ -11,6 +11,8 @@ import torch
 
 from .model import DualStreamRouter, RouterAction
 
+from .config import N_ANGLE_BINS
+
 OBS_KEYS = ("node_feats", "adj", "node_mask", "cur_net_mask",
             "points", "point_mask", "head_state")
 MASK_KEYS = ("type", "angle", "layer")
@@ -44,11 +46,11 @@ class RolloutBuffer:
         self.obs = {k: torch.zeros((T, *v.shape), dtype=torch.float32)
                     for k, v in obs_spec.items()}
         self.masks = {"type": torch.zeros((T, 3)),
-                      "angle": torch.zeros((T, 128)),
+                      "angle": torch.zeros((T, N_ANGLE_BINS)),
                       "layer": torch.zeros((T, 12))}
         self.a_type = torch.zeros(T, dtype=torch.long)
         self.a_angle = torch.zeros(T, dtype=torch.long)
-        self.a_dist = torch.zeros(T, dtype=torch.long)
+        self.a_dist = torch.zeros(T, dtype=torch.float32)  # continuous Beta sample in [0,1]
         self.a_layer = torch.zeros(T, dtype=torch.long)
         self.logp = torch.zeros(T)
         self.value = torch.zeros(T)
@@ -292,11 +294,11 @@ class VecRolloutBuffer:
         self._obs = {k: torch.zeros((S, N, *v.shape), dtype=torch.float32)
                     for k, v in obs_spec.items()}
         self._masks = {"type": torch.zeros((S, N, 3)),
-                      "angle": torch.zeros((S, N, 128)),
+                      "angle": torch.zeros((S, N, N_ANGLE_BINS)),
                       "layer": torch.zeros((S, N, 12))}
         self._a_type = torch.zeros((S, N), dtype=torch.long)
         self._a_angle = torch.zeros((S, N), dtype=torch.long)
-        self._a_dist = torch.zeros((S, N), dtype=torch.long)
+        self._a_dist = torch.zeros((S, N), dtype=torch.float32)  # continuous Beta sample in [0,1]
         self._a_layer = torch.zeros((S, N), dtype=torch.long)
         self._logp = torch.zeros((S, N))
         self._value = torch.zeros((S, N))
